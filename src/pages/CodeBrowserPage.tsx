@@ -431,8 +431,10 @@ export default function CodeBrowserPage() {
     if (mode === 'new-file') { setNewFileName(''); setNewFileContent(''); setCommitMsg('Add new file'); }
     if (mode === 'new-folder') { setNewFolderName(''); setCommitMsg('Add new folder'); }
     if (mode === 'upload') { setUploadFiles([]); setUploadCommitMsg('Upload files'); setUploadProgress(0); setSkipExisting(false); }
-    if (mode === 'rename' && target) setRenameTo(target.name);
-    if (mode === 'move' && target) setMoveTo(target.path);
+    if (mode === 'rename' && target) { setRenameTo(target.name); setCommitMsg(`Rename ${target.name}`); }
+    if (mode === 'move' && target) { setMoveTo(target.path); setCommitMsg(`Move ${target.name}`); }
+    if (mode === 'delete-file' && target) setCommitMsg(`Delete ${target.name}`);
+    if (mode === 'delete-folder' && target) setCommitMsg(`Delete folder ${target.name}`);
   };
 
   // ─── 保存编辑 ───
