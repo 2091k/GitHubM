@@ -48,6 +48,217 @@ new Paragraph({
 })
 ```
 
+## Standard Document Formatting Specifications
+
+When creating professional reports or formal documents, apply the following specifications. Use these as the default style system unless the user requests otherwise.
+
+### Typography
+| Element | Font | Size | Size (half-pts) |
+|---------|------|------|-----------------|
+| H1 | Microsoft YaHei | 26pt | 52 |
+| H2 | Microsoft YaHei | 20pt | 40 |
+| H3 | Microsoft YaHei | 16pt | 32 |
+| H4 | Microsoft YaHei | 14pt | 28 |
+| Body | Microsoft YaHei | 11pt | 22 |
+
+### Spacing
+| Element | Line spacing | Before | After |
+|---------|-------------|--------|-------|
+| H1 | 1.4× (`line: 336, lineRule: "auto"`) | — | — |
+| H2 | 1.4× (`line: 336, lineRule: "auto"`) | 18pt (360 twips) | 8pt (160 twips) |
+| H3 | — | 12pt (240 twips) | 4pt (80 twips) |
+| Body | At-least 20pt (`line: 400, lineRule: "atLeast"`) | — | — |
+
+> ⚠️ **CRITICAL — never use `lineRule: "exact"` (固定行距)**
+> `"exact"` hard-clips any content taller than the specified height. This causes:
+> - **文字折叠**: CJK characters (e.g. Microsoft YaHei) render slightly taller than Latin text and get clipped at the bottom
+> - **图片覆盖**: images in a paragraph with `exact` spacing are clipped to the line height, making the next paragraph appear to cover the image
+>
+> Always use `"atLeast"` for fixed-looking spacing — it behaves identically when content fits, but expands instead of clipping when it doesn't.
+
+### Complete Style Block (copy-paste ready)
+
+```javascript
+const { LineRuleType } = require('docx'); // add to imports if needed
+const FONT = "Microsoft YaHei";
+
+const styles = {
+  default: {
+    document: { run: { font: FONT, size: 22 } }  // 11pt body default
+  },
+  paragraphStyles: [
+    {
+      id: "Heading1", name: "Heading 1", basedOn: "Normal", next: "Normal", quickFormat: true,
+      run: { font: FONT, size: 52, bold: true, color: "000000" },
+      paragraph: {
+        spacing: { line: 336, lineRule: "auto" },
+        outlineLevel: 0
+      }
+    },
+    {
+      id: "Heading2", name: "Heading 2", basedOn: "Normal", next: "Normal", quickFormat: true,
+      run: { font: FONT, size: 40, bold: true, color: "000000" },
+      paragraph: {
+        spacing: { before: 360, after: 160, line: 336, lineRule: "auto" },
+        outlineLevel: 1
+      }
+    },
+    {
+      id: "Heading3", name: "Heading 3", basedOn: "Normal", next: "Normal", quickFormat: true,
+      run: { font: FONT, size: 32, bold: true, color: "000000" },
+      paragraph: {
+        spacing: { before: 240, after: 80, lineRule: "auto" },  // explicit "auto" — never inherit "exact"
+        outlineLevel: 2
+      }
+    },
+    {
+      id: "Heading4", name: "Heading 4", basedOn: "Normal", next: "Normal", quickFormat: true,
+      run: { font: FONT, size: 28, bold: true, color: "000000" },
+      paragraph: {
+        spacing: { lineRule: "auto" },  // explicit "auto" — never inherit "exact"
+        outlineLevel: 3
+      }
+    },
+    {
+      id: "Normal", name: "Normal",
+      run: { font: FONT, size: 22, color: "000000" },
+      paragraph: {
+        // "atLeast" not "exact" — exact clips CJK chars and images
+        spacing: { line: 400, lineRule: "atLeast" }
+      }
+    },
+    {
+      id: "FigureCaption", name: "Figure Caption", basedOn: "Normal",
+      run: { font: FONT, size: 28, color: "000000" },  // 14pt
+      paragraph: {
+        alignment: AlignmentType.CENTER,
+        spacing: { before: 0, after: 0 }
+      }
+    }
+  ]
+};
+```
+
+### Table Standard
+
+Light gray header (`F2F2F2`), thin borders (`D0D0D0`), header cells bold:
+
+```javascript
+const thinBorder = { style: BorderStyle.SINGLE, size: 4, color: "D0D0D0" };
+const cellBorders = { top: thinBorder, bottom: thinBorder, left: thinBorder, right: thinBorder };
+const headerShading = { fill: "F2F2F2", type: ShadingType.CLEAR };
+
+new TableRow({
+  tableHeader: true,
+  children: [
+    new TableCell({
+      borders: cellBorders,
+      shading: headerShading,
+      children: [new Paragraph({
+        children: [new TextRun({ text: "列标题", bold: true, font: FONT, size: 22 })]
+      })]
+    }),
+    // more header cells...
+  ]
+}),
+// Data rows: same cellBorders, no shading
+```
+
+### Image + Caption Standard
+
+⚠️ **Image paragraphs MUST use `lineRule: "auto"` (or omit `spacing` entirely).** If the paragraph inherits `lineRule: "atLeast"` or `"exact"` at a small value, the image will be clipped and the following content will appear to cover it.
+
+Max usable image width: **451pt** (A4 with 1" margins) or **468pt** (Letter with 1" margins). Never exceed these or the image overflows into the margin.
+
+```javascript
+// Image paragraph — explicit "auto" spacing, 16pt gap above image
+new Paragraph({
+  alignment: AlignmentType.CENTER,
+  spacing: { before: 320, after: 0, lineRule: "auto" },  // MUST be "auto", not "atLeast"/"exact"
+  children: [new ImageRun({
+    type: "png",
+    data: fs.readFileSync("image.png"),
+    transformation: { width: 400, height: 300 },  // width must be ≤ 451 (A4) or 468 (Letter)
+    altText: { title: "图片", description: "图片描述", name: "image" }
+  })]
+}),
+// Caption paragraph — 16pt gap below
+new Paragraph({
+  style: "FigureCaption",
+  spacing: { before: 0, after: 320, lineRule: "auto" },
+  children: [new TextRun({ text: "图1 图片标题", font: FONT, size: 28 })]
+}),
+```
+
+### Header & Footer Standard
+
+Header shows report name (left-aligned); footer shows centered page number:
+
+```javascript
+headers: {
+  default: new Header({
+    children: [new Paragraph({
+      alignment: AlignmentType.LEFT,
+      children: [new TextRun({ text: reportTitle, font: FONT, size: 18, color: "666666" })]
+    })]
+  })
+},
+footers: {
+  default: new Footer({
+    children: [new Paragraph({
+      alignment: AlignmentType.CENTER,
+      children: [
+        new TextRun({ children: [PageNumber.CURRENT], font: FONT, size: 18, color: "666666" })
+      ]
+    })]
+  })
+},
+```
+
+### Cover Page Standard
+
+Cover is a dedicated first section (no header/footer). Push content to vertical center by setting a large `margin.top` on the section — **never use a spacer `Paragraph` with `spacing.before`** to simulate vertical offset: spacer paragraphs are easy to accidentally copy into other sections and produce large blank areas at the top of every page.
+
+```javascript
+// Section 1: cover page — large top margin centers content vertically
+{
+  properties: {
+    page: {
+      // top margin ~35% of A4 page height (≈ 4200 twips) pushes content to visual center
+      margin: { top: 4200, right: 1440, bottom: 1440, left: 1440 }
+    }
+  },
+  children: [
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 480, lineRule: "auto" },
+      children: [new TextRun({ text: reportTitle, font: FONT, size: 72, bold: true })]
+    }),
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 960, lineRule: "auto" },
+      children: [new TextRun({ text: subtitle, font: FONT, size: 40, color: "444444" })]
+    }),
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { lineRule: "auto" },
+      children: [new TextRun({ text: dateStr, font: FONT, size: 28, color: "888888" })]
+    }),
+  ]
+},
+// Section 2: main content — restore normal margins, add header/footer
+{
+  properties: {
+    page: { margin: { top: 1440, right: 1440, bottom: 1440, left: 1440 } }
+  },
+  headers: { /* ... */ },
+  footers: { /* ... */ },
+  children: [ /* document body */ ]
+}
+```
+
+---
+
 ## Styles & Professional Formatting
 
 ```javascript
@@ -62,10 +273,10 @@ const doc = new Document({
       // IMPORTANT: Override built-in heading styles by using their exact IDs
       { id: "Heading1", name: "Heading 1", basedOn: "Normal", next: "Normal", quickFormat: true,
         run: { size: 32, bold: true, color: "000000", font: "Arial" }, // 16pt
-        paragraph: { spacing: { before: 240, after: 240 }, outlineLevel: 0 } }, // Required for TOC
+        paragraph: { spacing: { before: 240, after: 240, lineRule: "auto" }, outlineLevel: 0 } }, // Required for TOC; "auto" prevents clipping
       { id: "Heading2", name: "Heading 2", basedOn: "Normal", next: "Normal", quickFormat: true,
         run: { size: 28, bold: true, color: "000000", font: "Arial" }, // 14pt
-        paragraph: { spacing: { before: 180, after: 180 }, outlineLevel: 1 } },
+        paragraph: { spacing: { before: 180, after: 180, lineRule: "auto" }, outlineLevel: 1 } },
       // Custom styles use your own IDs
       { id: "myStyle", name: "My Style", basedOn: "Normal",
         run: { size: 28, bold: true, color: "000000" },
@@ -228,8 +439,10 @@ new Table({
 
 ## Links & Navigation
 ```javascript
-// TOC (requires headings) - CRITICAL: Use HeadingLevel only, NOT custom styles
-// ❌ WRONG: new Paragraph({ heading: HeadingLevel.HEADING_1, style: "customHeader", children: [new TextRun("Title")] })
+// TOC (requires headings)
+// CRITICAL: Headings MUST use `heading: HeadingLevel.HEADING_X` — NOT `style: "Heading1"` — for TOC to populate.
+// ❌ WRONG (TOC will be empty): new Paragraph({ style: "Heading1", children: [new TextRun("Title")] })
+// ❌ WRONG (TOC will be empty): new Paragraph({ heading: HeadingLevel.HEADING_1, style: "customHeader", children: [new TextRun("Title")] })
 // ✅ CORRECT: new Paragraph({ heading: HeadingLevel.HEADING_1, children: [new TextRun("Title")] })
 new TableOfContents("Table of Contents", { hyperlink: true, headingStyleRange: "1-3" }),
 
@@ -345,6 +558,11 @@ new Paragraph({
 - **CRITICAL for images**: ImageRun REQUIRES `type` parameter - always specify "png", "jpg", "jpeg", "gif", "bmp", or "svg"
 - **CRITICAL for bullets**: Must use `LevelFormat.BULLET` constant, not string "bullet", and include `text: "•"` for the bullet character
 - **CRITICAL for numbering**: Each numbering reference creates an INDEPENDENT list. Same reference = continues numbering (1,2,3 then 4,5,6). Different reference = restarts at 1 (1,2,3 then 1,2,3). Use unique reference names for each separate numbered section!
-- **CRITICAL for TOC**: When using TableOfContents, headings must use HeadingLevel ONLY - do NOT add custom styles to heading paragraphs or TOC will break
+- **CRITICAL for TOC**: Headings MUST use `heading: HeadingLevel.HEADING_X` property — using `style: "Heading1"` instead produces an empty TOC. Never combine `heading:` with a custom `style:` on the same Paragraph.
 - **Tables**: Set `columnWidths` array + individual cell widths, apply borders to cells not table
 - **Set table margins at TABLE level** for consistent cell padding (avoids repetition per cell)
+- **CRITICAL — NEVER use a spacer Paragraph to push content down**: empty paragraphs or paragraphs with large `spacing.before` used as vertical spacers are fragile — they get copied into other sections and produce large blank areas at the top of every page. Use `margin.top` on the section `properties.page` instead.
+- **CRITICAL — NEVER use `lineRule: "exact"`**: it hard-clips content taller than the value. CJK fonts (e.g. Microsoft YaHei) get bottom-clipped (文字折叠), and images in the paragraph are cropped causing the next paragraph to appear to cover them (图片覆盖). Always use `"atLeast"` for body text and `"auto"` for heading and image paragraphs.
+- **CRITICAL — All heading styles MUST set `lineRule: "auto"`**: headings inherit the Normal style's `"atLeast"` spacing and will clip tall CJK characters (文字折叠) without it. Always include `spacing: { lineRule: "auto" }` in every Heading paragraph style definition.
+- **CRITICAL — Image paragraph spacing must be `lineRule: "auto"`**: any inherited `"atLeast"` or `"exact"` spacing will clip the image and cause the following paragraph to visually overlap it (图片遮盖). Always set `spacing: { lineRule: "auto" }` explicitly on every paragraph that contains an `ImageRun`.
+- **CRITICAL — Image width must not exceed page usable width**: A4 with 1" margins = 451pt max; Letter with 1" margins = 468pt max. Wider images overflow into the margin and shift subsequent content.

@@ -6,12 +6,12 @@
 |------|-----|
 | Plugin ID | `284585aa-3c6e-4827-b46e-a1e610aa3100` |
 | API ID | `api-o9wN672BkyMa` |
-| Endpoint | `POST https://api-o9wN672BkyMa@qianfan.baidubce.com/beta/video/generations/kling/text2video` |
+| Endpoint | `POST https://app-bo4w33bsdqm9-api-o9wN672BkyMa-gateway.appmiaoda.com/beta/video/generations/kling/text2video` |
 | 认证模式 | `platform_managed` |
 | Auth Header | `X-Gateway-Authorization: Bearer ${INTEGRATIONS_API_KEY}` |
 | Content-Type | `application/json` |
-| 第三方域名 | `qianfan.baidubce.com` |
-| 计费 | 启用（原价 ¥130.00 / 折扣价 ¥85.00，按调用次数计费） |
+| 第三方域名 | `app-bo4w33bsdqm9-api-o9wN672BkyMa-gateway.appmiaoda.com` |
+| 说明 | 创建任务接口负责提交任务请求，查询接口见 `query-api.md` |
 
 ---
 
@@ -71,7 +71,7 @@ async function submitTextToVideo(
   duration: string = "5"
 ): Promise<{ task_id: string; task_status: string; created_at: number; updated_at: number }> {
   const response = await fetch(
-    "https://api-o9wN672BkyMa@qianfan.baidubce.com/beta/video/generations/kling/text2video",
+    "https://app-bo4w33bsdqm9-api-o9wN672BkyMa-gateway.appmiaoda.com/beta/video/generations/kling/text2video",
     {
       method: "POST",
       headers: {
@@ -149,7 +149,7 @@ serve(async (req: Request): Promise<Response> => {
   if (callbackUrl !== undefined) requestBody.callback_url = callbackUrl;
 
   const upstream = await fetch(
-    "https://api-o9wN672BkyMa@qianfan.baidubce.com/beta/video/generations/kling/text2video",
+    "https://app-bo4w33bsdqm9-api-o9wN672BkyMa-gateway.appmiaoda.com/beta/video/generations/kling/text2video",
     {
       method: "POST",
       headers: {
@@ -240,4 +240,4 @@ async function submitTextToVideoTask(
 - **密钥安全**：`INTEGRATIONS_API_KEY` 仅可在 Edge Function 服务端读取，严禁暴露到前端。
 - **异步设计**：Edge Function 必须立即返回 `task_id`，不可在函数内轮询，避免超时。
 - **错误处理**：务必处理 429（配额超限）和 402（余额不足）。
-- **计费**：创建任务接口启用计费，原价 ¥130.00 / 折扣价 ¥85.00，按调用次数计费；查询接口不计费。避免因重复提交产生不必要的费用。
+- **调用注意**：创建任务接口负责提交任务请求；请避免重复提交，以免产生重复任务。

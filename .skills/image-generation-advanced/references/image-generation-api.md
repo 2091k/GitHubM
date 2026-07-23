@@ -249,13 +249,13 @@ async function queryTaskStatus(taskId: string): Promise<{
   };
 }
 
-/** 完整异步工作流：提交文生图 → 轮询 → 返回图片 URL（约 5-10 分钟） */
+/** 完整异步工作流：提交文生图 → 轮询 → 返回图片 URL（约 5-20 分钟） */
 async function generateImage(prompt: string): Promise<string> {
   const taskId = await submitTextToImage(prompt);
   console.log(`Task submitted: ${taskId}`);
 
   const POLL_INTERVAL_MS = 7000;   // 建议 5-10 s
-  const TIMEOUT_MS = 10 * 60 * 1000; // 10 分钟
+  const TIMEOUT_MS = 20 * 60 * 1000; // 20 分钟（与服务端最长执行时间对齐）
   const deadline = Date.now() + TIMEOUT_MS;
 
   while (Date.now() < deadline) {
@@ -268,7 +268,7 @@ async function generateImage(prompt: string): Promise<string> {
     }
     // PENDING / PROCESSING → keep polling
   }
-  throw new Error(`Task ${taskId} timed out after 10 minutes`);
+  throw new Error(`Task ${taskId} timed out after 20 minutes`);
 }
 
 // 使用示例
@@ -287,56 +287,6 @@ console.log("Generated image URL:", imageUrl);
 ```typescript
 // edge-functions/submit-image-generation.ts
 import { serve } from "https://deno.land/std/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-const supabase = createClient(
-  Deno.env.get("SUPABASE_URL")!,
-  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
-);
-
-/**
- * Stream a remote media resource directly into Supabase Storage.
- *
- * @param mediaUrl - The remote URL to fetch and upload
- * @param bucketName - Target Supabase Storage bucket name
- * @param upsert - Whether to overwrite existing files (default: false)
- * @returns Success with publicUrl or failure with error string
- */
-async function streamMediaToStorage(
-  mediaUrl: string,
-  bucketName: string,
-  upsert = false
-): Promise<
-  | { success: true; path: string; publicUrl: string; contentType: string }
-  | { success: false; error: string }
-> {
-  try {
-    new URL(mediaUrl);
-    const response = await fetch(mediaUrl);
-    if (!response.ok) {
-      throw new Error(`Fetch failed: ${response.status} ${response.statusText}`);
-    }
-    const contentType = response.headers.get("content-type") ?? "application/octet-stream";
-    const isAllowed =
-      contentType.startsWith("image/") ||
-      contentType.startsWith("video/") ||
-      contentType.startsWith("audio/") ||
-      contentType === "application/octet-stream";
-    if (!isAllowed) throw new Error(`Unsupported content type: ${contentType}`);
-
-    const ext = contentType.split("/")[1]?.split(";")[0] ?? "bin";
-    const filePath = `uploads/${crypto.randomUUID()}.${ext}`;
-    const { data, error } = await supabase.storage
-      .from(bucketName)
-      .upload(filePath, response.body!, { contentType, cacheControl: "no-cache", upsert });
-    if (error) throw error;
-
-    const { data: urlData } = supabase.storage.from(bucketName).getPublicUrl(filePath);
-    return { success: true, path: data.path, publicUrl: urlData.publicUrl, contentType };
-  } catch (err) {
-    return { success: false, error: (err as Error).message };
-  }
-}
 
 serve(async (req: Request): Promise<Response> => {
   if (req.method !== "POST") {
@@ -686,7 +636,7 @@ async function generateImageAndWait(prompt: string): Promise<string> {
   console.log(`任务已提交，ID：${taskId}`);
 
   const POLL_INTERVAL_MS = 7000;
-  const TIMEOUT_MS = 10 * 60 * 1000;
+  const TIMEOUT_MS = 20 * 60 * 1000;
   const deadline = Date.now() + TIMEOUT_MS;
 
   while (Date.now() < deadline) {
@@ -698,7 +648,7 @@ async function generateImageAndWait(prompt: string): Promise<string> {
       throw new Error(`任务失败：${JSON.stringify(result.error)}`);
     }
   }
-  throw new Error("任务超时（10 分钟）");
+  throw new Error("任务超时（20 分钟）");
 }
 
 // 图生图：将 File 对象转为纯 Base64 后提交
@@ -798,7 +748,7 @@ async function generateImageAndWait(prompt: string): Promise<string> {
   const taskId = await submitImageGeneration(prompt);
 
   const POLL_INTERVAL_MS = 7000;
-  const TIMEOUT_MS = 10 * 60 * 1000;
+  const TIMEOUT_MS = 20 * 60 * 1000;
   const deadline = Date.now() + TIMEOUT_MS;
 
   while (Date.now() < deadline) {
@@ -809,7 +759,7 @@ async function generateImageAndWait(prompt: string): Promise<string> {
       throw new Error(`任务失败：${JSON.stringify(result.error)}`);
     }
   }
-  throw new Error("任务超时（10 分钟）");
+  throw new Error("任务超时（20 分钟）");
 }
 
 // 小程序图生图：使用 Taro.chooseImage 选图，调用 FileSystemManager 转 Base64
@@ -926,7 +876,7 @@ async function queryTaskStatus(taskId: string): Promise<{
 /** 轮询等待任务完成 */
 async function pollUntilDone(taskId: string): Promise<string> {
   const POLL_INTERVAL = 7000;
-  const TIMEOUT = 10 * 60 * 1000;
+  const TIMEOUT = 20 * 60 * 1000;
   const deadline = Date.now() + TIMEOUT;
 
   while (Date.now() < deadline) {
@@ -937,7 +887,7 @@ async function pollUntilDone(taskId: string): Promise<string> {
       throw new Error(`任务失败：${JSON.stringify(result.error)}`);
     }
   }
-  throw new Error('任务超时（10 分钟）');
+  throw new Error('任务超时（20 分钟）');
 }
 
 export default function ImageGenerationScreen() {
@@ -1028,9 +978,9 @@ export default function ImageGenerationScreen() {
 
 - **`expo-image-picker` 的 `base64: true`** 选项直接返回纯 Base64 字符串（不含 `data:image/xxx;base64,` 前缀），与 API 要求的格式完全匹配，无需手动截取
 - **图生图输入无需上传至 Storage**：Base64 直接通过 Edge Function 传给上游 API，不走 Storage
-- **生成结果已由 Edge Function 转存**：query-task Edge Function 内置 `streamMediaToStorage`，任务成功时自动将图片转存至 Supabase Storage 并返回持久 URL
+- **生成结果已由 query-task EF 转存**：query-task Edge Function 内置 `streamMediaToStorage`，任务成功时自动将图片转存至 Supabase Storage 并返回持久 URL
 - **请求大小限制**：总请求体（含 Base64 图像）< 20MB，图生图时注意图片大小
-- **轮询间隔**：建议 7 秒，超时建议 10 分钟；图片生成通常需 1-5 分钟
+- **轮询间隔**：建议 7 秒，超时建议 20 分钟；图片生成通常需 1-5 分钟
 
 ---
 
@@ -1047,12 +997,12 @@ export default function ImageGenerationScreen() {
 4. **Base64 格式**：`inline_data.data` 必须是纯 Base64 字符串，
    不含 `data:image/xxx;base64,` 前缀，否则接口将返回错误。
 
-5. **轮询间隔**：建议 5-10 秒轮询一次，超时时间建议设置 10 分钟以上；
+5. **轮询间隔**：建议 5-10 秒轮询一次，超时时间建议设置 20 分钟以上；
    任务最长执行时间为 20 分钟，超过后返回 `FAILED`（`error.code: "TIMEOUT"`）。
 
 6. **图片持久化**：上游返回的 `imageUrl` 是 CDN 临时链接，建议通过
    Supabase Storage 转存后使用持久 `publicUrl`。
-   Edge Function 中已集成 `streamMediaToStorage`，成功时自动替换 URL。
+   query-task Edge Function 中已集成 `streamMediaToStorage`，成功时自动替换 URL。
 
 7. **MiniProgram 查询接口**：Miaoda 平台代理会静默丢弃小 POST 请求体，
    必须改用 GET + URL 参数传递 taskId，详见 MiniProgram Edge Function 代码。

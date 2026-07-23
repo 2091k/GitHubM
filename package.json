@@ -76,7 +76,7 @@
     "input-otp": "^1.4.2",
     "ky": "^1.2.3",
     "lucide-react": "^0.576.0",
-    "miaoda-react-devkit": "0.1.1-beta.14",
+    "miaoda-react-devkit": "0.1.1-beta.15",
     "motion": "^12.23.25",
     "next-themes": "^0.4.6",
     "qrcode": "^1.5.4",
@@ -102,7 +102,8 @@
     "tailwindcss-intersect": "^2.2.0",
     "vaul": "^1.1.2",
     "video-react": "^0.16.0",
-    "zod": "^3.25.76"
+    "zod": "^3.25.76",
+    "zustand": "^5.0.14"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.5",

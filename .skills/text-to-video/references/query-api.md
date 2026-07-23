@@ -6,12 +6,12 @@
 |------|-----|
 | Plugin ID | `284585aa-3c6e-4827-b46e-a1e610aa3100` |
 | API ID | `api-nYWNozBb5qML` |
-| Endpoint | `GET https://api-nYWNozBb5qML@qianfan.baidubce.com/beta/video/generations/kling/text2video` |
+| Endpoint | `GET https://app-bo4w33bsdqm9-api-nYWNozBb5qML-gateway.appmiaoda.com/beta/video/generations/kling/text2video` |
 | 认证模式 | `platform_managed` |
 | Auth Header | `X-Gateway-Authorization: Bearer ${INTEGRATIONS_API_KEY}` |
 | Content-Type | `application/json` |
-| 第三方域名 | `qianfan.baidubce.com` |
-| 计费 | 不启用（查询接口免费） |
+| 第三方域名 | `app-bo4w33bsdqm9-api-nYWNozBb5qML-gateway.appmiaoda.com` |
+| 说明 | 仅用于查询任务状态 |
 
 ---
 
@@ -71,7 +71,7 @@ async function queryTextToVideo(taskId: string): Promise<{
   updated_at: number;
 }> {
   const url = new URL(
-    "https://api-nYWNozBb5qML@qianfan.baidubce.com/beta/video/generations/kling/text2video"
+    "https://app-bo4w33bsdqm9-api-nYWNozBb5qML-gateway.appmiaoda.com/beta/video/generations/kling/text2video"
   );
   url.searchParams.set("task_id", taskId);
 
@@ -135,7 +135,7 @@ serve(async (req: Request): Promise<Response> => {
 
   // --- 调用上游查询接口 ---
   const queryUrl = new URL(
-    "https://api-nYWNozBb5qML@qianfan.baidubce.com/beta/video/generations/kling/text2video"
+    "https://app-bo4w33bsdqm9-api-nYWNozBb5qML-gateway.appmiaoda.com/beta/video/generations/kling/text2video"
   );
   queryUrl.searchParams.set("task_id", taskId);
 
@@ -368,4 +368,4 @@ async function pollUntilComplete(taskId: string): Promise<string> {
 - **轮询超时**：建议设置 10 分钟超时，超时后停止轮询并提示用户。
 - **Supabase Storage bucket**：需确保 `generated-media` bucket 已创建并配置公开访问权限。
 - **错误处理**：务必处理 429（配额超限）和 402（余额不足）；`task_status_msg` 在失败时含有详细原因（如触发内容风控）。
-- **计费**：查询接口不计费，可放心轮询；创建任务接口按调用次数计费，避免重复提交。
+- **调用职责**：查询接口仅用于轮询任务状态。

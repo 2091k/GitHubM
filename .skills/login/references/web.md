@@ -6,6 +6,10 @@ Required items: must be complete and verified; higher priority than user request
 Recommended items: also to be done, but lower priority than user requests.
 Protect data security while maximizing access for guests and regular users.
 
+Login method selection:
+- **IMPORTANT**: When the user explicitly specifies a login method (e.g., phone-OTP, Google SSO, email-password, username-password), implement **ONLY** that method — do NOT add other methods alongside it.
+- No method specified → use username + password (default)
+
 Required:
 1. Design a login page.
     - Include registration
@@ -65,10 +69,10 @@ CREATE TRIGGER on_auth_user_created
      Step 2: If verification is enabled, use the `supabase_execute_sql` tool to bypass it:
      ```sql
      -- username+password: confirm by email
-     UPDATE auth.users SET email_confirmed_at = NOW(), confirmed_at = NOW() WHERE email = '<username>@miaoda.com';
+     UPDATE auth.users SET email_confirmed_at = NOW() WHERE email = '<username>@miaoda.com';
 
      -- phone+OTP: confirm by phone
-     UPDATE auth.users SET phone_confirmed_at = NOW(), confirmed_at = NOW() WHERE phone = '<phone>';
+     UPDATE auth.users SET phone_confirmed_at = NOW() WHERE phone = '<phone>';
      ```
      Step 3: Use the `supabase_execute_sql` tool to promote the user to admin (query by the identifier used at signup — email for username+password, phone for phone+OTP, email for email+password):
      ```sql
@@ -132,9 +136,8 @@ CREATE VIEW public_profiles AS
 
 
 Recommended:
-1. If no method specified, use username + password.
-2. Login must check `supabase_verification`; show phone/email verification UI if enabled.
-3. If no verification is needed, auto-login after signup and go back to the last page.
+1. Login must check `supabase_verification`; show phone/email verification UI if enabled.
+2. If no verification is needed, auto-login after signup and go back to the last page.
 
 
 Tech limits:
@@ -147,6 +150,10 @@ Tech limits:
 7. Only username in email field; no phone.
 8. Do not allow login with both email and username. Use username. Store email in the profiles table.
 9. AI-registered or AI-created accounts must use randomly generated, strong passwords (16+ chars, mixed uppercase + lowercase + digits + symbols). Never use simple or guessable passwords unless the user explicitly specifies the password.
+10. **signUp with role selection or approval flow MUST use an Edge Function**: Two cases require wrapping `signUp` in a Supabase Edge Function (service-role key) instead of calling it directly from the frontend:
+    - **Case A — role selected at registration**: When the user picks an identity/role during signup (e.g. buyer vs. seller, student vs. teacher), the Edge Function calls `supabaseAdmin.auth.admin.createUser(...)` and writes the chosen role to `profiles` atomically. NEVER call `supabase.auth.signUp()` on the frontend and then do a separate `profiles` role update from client code.
+    - **Case B — post-registration approval**: When the account must go through a review/approval step before activation, the Edge Function creates the user and sets `status = 'pending'`. NEVER let the frontend call `signUp` and then write approval state directly.
+    - In both cases the frontend only calls the Edge Function and receives a session token back; no privileged writes happen client-side.
 
 Finish Summary Requirements (MANDATORY):
 In the final reply to the user, you MUST include a summary section covering all applicable items:

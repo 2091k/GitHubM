@@ -1,6 +1,6 @@
 ---
 name: image-generation-advanced
-description: 高级图片生成与编辑，支持文生图、图生图、多图合成，异步任务轮询。需要生成图片、编辑图片或对图片做风格转换时优先使用该工具。
+description: 高级图片生成与编辑，支持文生图、图生图、多图合成，异步任务轮询。需要 AI 生成图片、对图片做内容编辑或风格转换时优先使用该工具。
 license: MIT
 ---
 
@@ -37,9 +37,51 @@ license: MIT
 
 ---
 
+## 使用前决策
+
+调用本工具前，先判断场景是否真的需要 AI 生成：
+
+| 场景 | 推荐方案 |
+|------|---------|
+| 根据文字描述生成全新图片 | ✅ 本工具（文生图） |
+| 上传图片 + 提示词做风格转换或内容编辑 | ✅ 本工具（图生图） |
+| 多张图片智能合成新图 | ✅ 本工具（多图生图） |
+| 图片内容审核 / 质量评分 | ❌ 改用视觉模型直接分析，无需生成 |
+
+---
+
+## Prompt 编写规范
+
+底层模型（Gemini Imagen 系列）**对英文提示词的输出质量明显优于中文**，请始终先将用户需求翻译/改写为英文后再提交 API。
+
+**写作原则：**
+- 使用描述句，直接描述目标画面，而非告诉模型"帮我生成……"
+- 具体优于抽象：`"a ginger cat sitting in a sunlit garden"` 好于 `"可爱的猫"`
+- 避免否定词：不写 `"no background"`，改写 `"isolated on pure white background"`
+- 末尾加质量修饰词提升细节：`high quality`, `detailed`, `8k`, `photorealistic`
+
+**文生图模板：**
+
+```
+[Subject], [Action/Pose/State], [Scene/Environment], [Lighting], [Style], [Quality]
+```
+
+示例：
+```
+A golden retriever puppy, sitting and looking up curiously, in a cozy living room with warm afternoon lighting, watercolor illustration style, high quality, detailed
+```
+
+**图生图额外建议：**
+- 先描述希望**保留**的内容，再描述希望**改变**的内容
+- 风格迁移时明确目标风格，例如 `"convert to anime style"` 或 `"oil painting style"`
+
+---
+
 ## 生成期用法（Agent 直接调用）
 
-适用于 Agent 脚本直接调用（Deno 环境），密钥由平台注入。
+适用于 Agent 脚本直接调用，密钥由平台注入。
+
+> **在调用 API 之前，先将用户需求翻译/改写为英文提示词**，底层 Gemini Imagen 系列模型对英文输入的图像质量明显优于中文。
 
 ```typescript
 const apiKey = process.env["INTEGRATIONS_API_KEY"]!;
@@ -97,7 +139,7 @@ async function generateImage(prompt: string): Promise<string> {
   const taskId = await submitImageGeneration(prompt);
 
   const POLL_INTERVAL_MS = 7000;
-  const TIMEOUT_MS = 10 * 60 * 1000;
+  const TIMEOUT_MS = 20 * 60 * 1000;
   const deadline = Date.now() + TIMEOUT_MS;
 
   while (Date.now() < deadline) {
@@ -109,9 +151,21 @@ async function generateImage(prompt: string): Promise<string> {
     }
     // PENDING / PROCESSING → keep polling
   }
-  throw new Error(`Task ${taskId} timed out after 10 minutes`);
+  throw new Error(`Task ${taskId} timed out after 20 minutes`);
 }
 ```
+
+**空间位置描述（生成期 Prompt 增强）：**
+
+在提示词中加入空间位置词可显著提高构图准确性：
+
+| 位置关键词 | 说明 | 示例 |
+|-----------|------|------|
+| `centered` / `in the center` | 主体居中 | `"a red rose, centered, white background"` |
+| `in the top-left / bottom-right corner` | 角落定位 | `"logo in the top-left corner"` |
+| `in the foreground / background` | 前景/背景层次 | `"flowers in the foreground, mountains in the background"` |
+| `on the left side / right side` | 左右分布 | `"person on the left, product on the right"` |
+| `filling the entire frame` | 占满画面 | `"texture filling the entire frame"` |
 
 **生成期文件下载（必须执行）：**
 
@@ -145,3 +199,4 @@ curl -L -o <本地路径> "<生成的文件 URL>"
 | MiniProgram | 查询接口用 GET + URL 参数（绕过代理 body 丢失问题） | `supabase.functions.invoke("query-task?taskId=...")` with `method: "GET"` |
 
 完整 Edge Function 代码和前端调用代码详见 `references/image-generation-api.md`。
+

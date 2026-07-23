@@ -109,9 +109,9 @@ Auth pattern depends on the API's authentication type:
 - Key source: `process.env["INTEGRATIONS_API_KEY"]!`
 - Auth header: `"X-Gateway-Authorization": \`Bearer ${apiKey}\``
 
-**`key_type: user_managed`** — user provides their own API key, use `gateway_schema.authValue` directly:
-- Key source: `gateway_schema.authValue` as a hardcoded constant (or from env if configured)
-- Auth header: `"X-Gateway-Authorization": AUTH_VALUE` (always use `X-Gateway-Authorization`, regardless of `gateway_schema.authKey` value)
+**`key_type: user_managed`** — user provides their own API key, read from a skill-specific env var at runtime:
+- Key source: `process.env["<SKILL_NAME_UPPER>_API_KEY"]!` (use the skill name in SCREAMING_SNAKE_CASE as prefix, e.g. `WEATHER_API_API_KEY`)
+- Auth header: use `gateway_schema.authKey` as the header name, value is `apiKey` directly (no `Bearer` prefix)
 
 **`key_type: no_key`** — no auth header needed.
 
@@ -146,14 +146,14 @@ async function call<API_NAME>(/* extracted params */): Promise</* return type */
 ### Standard TypeScript pattern — `user_managed`
 
 ```typescript
-const AUTH_VALUE = "<gateway_schema.authValue>"; // replace with actual value from gateway_schema
+const apiKey = process.env["<SKILL_NAME_UPPER>_API_KEY"]!; // user_managed skill 密钥由用户配置到环境变量
 
 async function call<API_NAME>(/* extracted params */): Promise</* return type */> {
   const response = await fetch("https://<api_id>@<gateway_schema.url host+path>", {
     method: "<gateway_schema.method.toUpperCase()>",
     headers: {
       "Content-Type": "application/x-www-form-urlencoded", // adjust if json
-      "X-Gateway-Authorization": AUTH_VALUE,
+      "<gateway_schema.authKey>": apiKey,  // use authKey from gateway_schema as header name
     },
     body: new URLSearchParams({ /* params */ }).toString(),
   });
@@ -331,8 +331,8 @@ Add API-specific notes as needed (rate limits, precision caveats, data freshness
 |-------------|----------------------------|
 | Endpoint URL | 在 `gateway_schema.url` 的 `https://` 后、hostname 前插入 `{api_id}@`，`api_id` 取 `gateway_apis[].id` 的真实值。例：`gateway_schema.url` 为 `https://foo.api.com/v1/bar`，`id` 为 `api-abc123`，则 URL 写成 `https://api-abc123@foo.api.com/v1/bar`。**此格式适用于所有出现 gateway API URL 的位置，包括文档表格（能力概述的 Endpoint 行）和代码中的 fetch 调用。** |
 | HTTP method | `gateway_schema.method` |
-| Auth header name | Always `X-Gateway-Authorization` (regardless of `gateway_schema.authKey` value, including query param `ak`) |
-| Auth header value | `gateway_schema.authValue` — used directly for `user_managed`; `platform_managed` reads from `INTEGRATIONS_API_KEY` env var |
+| Auth header name | `platform_managed`: always `X-Gateway-Authorization`; `user_managed`: use `gateway_schema.authKey` directly |
+| Auth header value | `platform_managed` reads from `INTEGRATIONS_API_KEY` env var; `user_managed` reads from `<SKILL_NAME_UPPER>_API_KEY` env var (skill-specific name) |
 | Content-Type | `gateway_schema.contentType` (`"form"` or `"json"`) |
 | Parameters | `context` → `### Parameters` block |
 | Response shape | `context` → `### Response` block |

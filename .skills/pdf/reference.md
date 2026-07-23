@@ -274,6 +274,11 @@ pdftotext -bbox-layout document.pdf output.xml
 # The XML output contains precise coordinates for each text element
 ```
 
+**WARNING**: `-bbox-layout` outputs XHTML. The text content has two common problems that must be fixed before writing into a PDF:
+1. **HTML tags**: Bold/italic text is wrapped in `<b>`, `<i>`, etc. — strip all tags or they appear literally in the output.
+2. **Whitespace**: Word elements are separated by newlines and indentation in the XML — collapse all `\n`, `\t`, and consecutive spaces into a single space.
+Also decode HTML entities (`&amp;` → `&`, `&nbsp;` → ` `, etc.). The fill scripts handle this automatically, but if you extract text manually and build `fields.json` yourself, clean the text first.
+
 #### Advanced Image Conversion
 ```bash
 # Convert to PNG images with specific resolution
@@ -533,7 +538,7 @@ with open("cropped.pdf", "wb") as output:
 - Process pages individually with pypdfium2
 
 ### 2. For Text Extraction
-- `pdftotext -bbox-layout` is fastest for plain text extraction
+- `pdftotext -bbox-layout` is fastest for plain text extraction, but its output is XHTML — strip `<b>`, `<i>`, and other HTML tags before using the text
 - Use pdfplumber for structured data and tables
 - Avoid `pypdf.extract_text()` for very large documents
 

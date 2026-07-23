@@ -20,7 +20,7 @@
 
 | 参数名 | 类型 | 必填 | 说明 |
 |--------|------|------|------|
-| `model` | `string` | 是 | 固定值：`gpt-image-2`，**必须传递**，否则上游返回 403 |
+| `model` | `string` | 是 | 固定值：`gpt-image-2` |
 | `prompt` | `string` | 是 | 图片编辑描述词，控制最终生成效果 |
 | `size` | `string` | 否 | 输出图片尺寸，如 `2848x1152` |
 | `n` | `integer` | 否 | 输出图片数量，默认 1 |
@@ -175,160 +175,78 @@ echo "<base64_data>" | base64 -d > <本地路径>.png
 
 ### Web 平台
 
-编辑接口使用 `multipart/form-data`，由于图片编辑耗时较长（可能超过中间路由的超时时间），Edge Function 采用 **SSE（Server-Sent Events）流式响应**：每 15 秒发送心跳事件保持连接活跃，上游返回后将结果以 SSE 事件推送给前端。
-
-**SSE 事件格式：**
-
-| 事件类型 | 说明 | 示例 |
-|----------|------|------|
-| `heartbeat` | 心跳，防止连接超时 | `{"type":"heartbeat","elapsed":15000}` |
-| `result` | 成功结果 | `{"type":"result","data":{...ImageResult...}}` |
-| `error` | 错误信息 | `{"type":"error","status":429,"message":"..."}` |
+编辑接口使用 `multipart/form-data`，Edge Function 需要将前端上传的文件流直接转发给上游。
 
 ```typescript
 // edge-functions/image-edits.ts
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-
-// SSE 响应头（含 CORS）
-const SSE_HEADERS = {
-  "Content-Type": "text/event-stream",
-  "Cache-Control": "no-cache",
-  "Connection": "keep-alive",
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
-
-// 序列化一条 SSE 事件行
-function sseEvent(payload: unknown): Uint8Array {
-  return new TextEncoder().encode(`data: ${JSON.stringify(payload)}\n\n`);
-}
+import { serve } from "https://deno.land/std/http/server.ts";
 
 serve(async (req: Request): Promise<Response> => {
-  const t0 = Date.now();
-
-  // 处理 CORS 预检
-  if (req.method === "OPTIONS") {
-    return new Response(null, {
-      status: 204,
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-      },
-    });
-  }
-
   if (req.method !== "POST") {
-    return new Response(JSON.stringify({ error: "Method Not Allowed" }), {
-      status: 405,
-      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
-    });
+    return new Response("Method Not Allowed", { status: 405 });
   }
 
-  // --- 校验 multipart/form-data ---
+  // --- Parse client request (multipart/form-data) ---
   const contentType = req.headers.get("content-type");
   if (!contentType || !contentType.includes("multipart/form-data")) {
     return new Response(JSON.stringify({ error: "Expected multipart/form-data" }), {
       status: 400,
-      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+      headers: { "Content-Type": "application/json" },
     });
   }
 
-  // --- 注入平台密钥 ---
+  // --- Inject platform key (never expose to client) ---
   const apiKey = Deno.env.get("INTEGRATIONS_API_KEY");
   if (!apiKey) {
     return new Response(JSON.stringify({ error: "Server configuration error" }), {
       status: 500,
-      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+      headers: { "Content-Type": "application/json" },
     });
   }
 
-  // --- 解析 FormData 并注入 model（必须字段，缺失会被上游网关 403 拒绝）---
-  // 注意：不能用 req.arrayBuffer() 直接透传，必须解析后确保 model 字段存在
-  const formData = await req.formData();
-  if (!formData.get("model")) {
-    formData.set("model", "gpt-image-2");
+  // Read the raw body as bytes and reconstruct with auth header
+  const bodyBytes = new Uint8Array(await req.arrayBuffer());
+
+  // --- Call upstream ---
+  const upstream = await fetch(
+    "http://app-bo4w33bsdqm9-api-baBw3XMNVmv9-gateway.appmiaoda.com/v1/images/edits",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": contentType,
+        "X-Gateway-Authorization": `Bearer ${apiKey}`,
+      },
+      body: bodyBytes,
+    }
+  );
+
+  // Forward quota/balance errors verbatim
+  if (upstream.status === 429 || upstream.status === 402) {
+    const errText = await upstream.text();
+    return new Response(errText, {
+      status: upstream.status,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 
-  // --- 构造 SSE 流式响应 ---
-  const stream = new ReadableStream({
-    start(controller) {
-      // 心跳定时器：每 15 秒发送一次心跳，防止连接超时
-      const heartbeatInterval = setInterval(() => {
-        try {
-          controller.enqueue(
-            sseEvent({ type: "heartbeat", elapsed: Date.now() - t0 })
-          );
-        } catch (_) {
-          clearInterval(heartbeatInterval);
-        }
-      }, 15_000);
+  if (!upstream.ok) {
+    return new Response(
+      JSON.stringify({ error: `Upstream error: ${upstream.status}` }),
+      { status: 502, headers: { "Content-Type": "application/json" } }
+    );
+  }
 
-      // 异步向上游发请求
-      (async () => {
-        // --- 超时控制（540s）---
-        const abortController = new AbortController();
-        const timeoutId = setTimeout(() => abortController.abort(), 540_000);
-
-        let upstream: Response;
-        try {
-          upstream = await fetch(
-            "http://app-bo4w33bsdqm9-api-baBw3XMNVmv9-gateway.appmiaoda.com/v1/images/edits",
-            {
-              method: "POST",
-              signal: abortController.signal,
-              headers: {
-                "X-Gateway-Authorization": `Bearer ${apiKey}`,
-              },
-              body: formData,
-            }
-          );
-        } catch (err) {
-          clearTimeout(timeoutId);
-          clearInterval(heartbeatInterval);
-          controller.enqueue(sseEvent({ type: "error", message: `Fetch exception: ${err}` }));
-          controller.close();
-          return;
-        }
-        clearTimeout(timeoutId);
-
-        // 透传 4xx 业务错误
-        if (upstream.status === 400 || upstream.status === 402 || upstream.status === 429) {
-          const errText = await upstream.text();
-          clearInterval(heartbeatInterval);
-          controller.enqueue(
-            sseEvent({ type: "error", status: upstream.status, message: errText })
-          );
-          controller.close();
-          return;
-        }
-
-        if (!upstream.ok) {
-          const errText = await upstream.text();
-          clearInterval(heartbeatInterval);
-          controller.enqueue(
-            sseEvent({ type: "error", status: upstream.status, message: `Upstream error: ${upstream.status}`, detail: errText })
-          );
-          controller.close();
-          return;
-        }
-
-        // 成功：读取完整 JSON 并推送结果
-        const data = await upstream.json();
-        clearInterval(heartbeatInterval);
-        controller.enqueue(sseEvent({ type: "result", data }));
-        controller.close();
-      })();
-    },
+  const data = await upstream.json();
+  return new Response(JSON.stringify(data), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
   });
-
-  return new Response(stream, { headers: SSE_HEADERS });
 });
 ```
 
 ### MiniProgram 平台
 
-MiniProgram 的 Edge Function 逻辑与 Web 平台相同（SSE 流式响应），前端处理图片的方式略有不同（需写入临时文件后用 `<image>` 组件展示，weapp 真机不支持 `data:` URI 直接渲染）。
+MiniProgram 的 Edge Function 逻辑与 Web 平台相同（multipart/form-data 直接转发），前端处理图片的方式略有不同（需写入临时文件后用 `<image>` 组件展示，weapp 真机不支持 `data:` URI 直接渲染）。
 
 ---
 
@@ -336,31 +254,11 @@ MiniProgram 的 Edge Function 逻辑与 Web 平台相同（SSE 流式响应）�
 
 ### Web 平台（React / Vue / 原生 TypeScript）
 
-由于编辑图片 Edge Function 采用 SSE 流式响应，前端需使用原生 `fetch` + `getReader()` 消费流事件。
-
-**SSE 事件类型定义：**
+**推荐方式（supabase client）：**
 
 ```typescript
-type SseEvent =
-  | { type: "heartbeat"; elapsed: number }
-  | { type: "result"; data: ImageResult }
-  | { type: "error"; status?: number; message: string; detail?: string };
-```
-
-**推荐方式（SSE 流式消费）：**
-
-> **重要**：FormData 中必须包含 `model` 字段（值为 `gpt-image-2`），否则上游网关返回 403。
-
-```typescript
-async function editImage(
-  params: { prompt: string; size?: string; n?: number; images: File[] },
-  onHeartbeat?: (elapsed: number) => void
-): Promise<ImageResult> {
-  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string;
-  const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
-
+async function editImage(params: { prompt: string; size?: string; n?: number; images: File[] }) {
   const formData = new FormData();
-  formData.append("model", "gpt-image-2");
   formData.append("prompt", params.prompt);
   if (params.size) formData.append("size", params.size);
   if (params.n) formData.append("n", String(params.n));
@@ -368,54 +266,43 @@ async function editImage(
     formData.append(`image[${index}]`, file);
   });
 
-  const response = await fetch(`${supabaseUrl}/functions/v1/image-edits`, {
+  const { data, error } = await supabase.functions.invoke("image-edits", {
+    body: formData,
+  });
+  if (error) throw error;
+  return data;
+}
+```
+
+**备用方式（fetch）：**
+
+```typescript
+async function editImage(params: { prompt: string; size?: string; n?: number; images: File[] }) {
+  const formData = new FormData();
+  formData.append("prompt", params.prompt);
+  if (params.size) formData.append("size", params.size);
+  if (params.n) formData.append("n", String(params.n));
+  params.images.forEach((file, index) => {
+    formData.append(`image[${index}]`, file);
+  });
+
+  const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/image-edits`, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${supabaseAnonKey}`,
-    },
     body: formData,
   });
 
-  if (!response.ok) {
-    const text = await response.text();
-    if (response.status === 429) throw new Error("配额已用尽");
-    if (response.status === 402) throw new Error("余额不足");
-    throw new Error(`请求失败（${response.status}）：${text}`);
+  if (res.status === 429) {
+    const err = await res.json();
+    throw new Error(`配额已用尽：${err.message ?? res.statusText}`);
   }
-
-  const reader = response.body!.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    const parts = buffer.split("\n\n");
-    buffer = parts.pop() ?? "";
-
-    for (const part of parts) {
-      const line = part.trim();
-      if (!line.startsWith("data:")) continue;
-
-      const event: SseEvent = JSON.parse(line.slice(5).trim());
-
-      if (event.type === "heartbeat") {
-        onHeartbeat?.(event.elapsed);
-      } else if (event.type === "result") {
-        reader.cancel();
-        return event.data;
-      } else if (event.type === "error") {
-        reader.cancel();
-        if (event.status === 429) throw new Error("配额已用尽");
-        if (event.status === 402) throw new Error("余额不足");
-        throw new Error(event.message || "编辑失败");
-      }
-    }
+  if (res.status === 402) {
+    const err = await res.json();
+    throw new Error(`余额不足：${err.message ?? res.statusText}`);
   }
+  if (!res.ok) throw new Error(`请求失败：${res.status}`);
 
-  throw new Error("编辑失败：服务端未返回结果");
+  const json = await res.json();
+  return json;
 }
 ```
 
@@ -436,8 +323,6 @@ const imageUrl = URL.createObjectURL(blob);
 
 ### MiniProgram 平台（Taro / 原生小程序）
 
-MiniProgram 环境不支持标准 SSE 流式读取，可使用轮询或通过 Taro 的 `request` 配置较长超时时间。若平台支持流式，逻辑与 Web 平台一致。
-
 ```typescript
 import Taro from "@tarojs/taro";
 import { createClient } from "@supabase/supabase-js";
@@ -449,7 +334,6 @@ const supabase = createClient(
 
 async function editImage(params: { prompt: string; size?: string; n?: number; images: File[] }) {
   const formData = new FormData();
-  formData.append("model", "gpt-image-2");
   formData.append("prompt", params.prompt);
   if (params.size) formData.append("size", params.size);
   if (params.n) formData.append("n", String(params.n));
@@ -480,6 +364,15 @@ async function saveAndPreviewBase64(base64: string): Promise<string> {
     });
   });
 }
+
+// 使用示例
+const result = await editImage({
+  prompt: "帮我把多张图片整合成一张电影海报",
+  size: "2848x1152",
+  images: [file1, file2],
+});
+const imagePath = await saveAndPreviewBase64(result.data[0].b64_json);
+// <Image src={imagePath} mode="aspectFit" />
 ```
 
 ---
@@ -490,10 +383,8 @@ async function saveAndPreviewBase64(base64: string): Promise<string> {
 
 2. **文件上传限制**：编辑接口最多支持 3 张图片（`image[0]` 必填，`image[1]`、`image[2]` 可选），需确保图片格式和大小符合上游要求。
 
-3. **错误处理**：务必处理 429（配额超限）和 402（余额不足）两种错误状态码，这两种错误会通过 SSE `error` 事件从上游直接转发。
+3. **错误处理**：务必处理 429（配额超限）和 402（余额不足）两种错误状态码，这两种错误会从上游直接转发。
 
 4. **Base64 格式**：返回的 `b64_json` 是纯 Base64 字符串，不含 `data:image/xxx;base64,` 前缀，前端需自行拼接或转为 Blob。
 
 5. **支持的图片格式**：输出固定为 PNG 格式。输入支持常见图片格式（jpg、png、webp 等），具体以上游限制为准。
-
-6. **SSE 流式响应**：由于图片编辑耗时较长（数十秒至数分钟），同步接口容易被中间路由（网关/CDN）因超时断开。Edge Function 采用 SSE 流式响应 + 15 秒心跳机制保持连接活跃，前端需使用 `fetch` + `ReadableStream` 消费事件流。

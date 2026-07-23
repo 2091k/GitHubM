@@ -1,39 +1,39 @@
 ---
 name: web-reader
-description: 抓取任意 URL 的网页内容并返回干净的 Markdown 文本，适用于用户分享链接需要阅读、分析、摘要或翻译网页内容的场景。
+description: Fetches the content of any URL and returns clean Markdown text. Suitable for scenarios where users share links and need to read, analyze, summarize, or translate web page content.
 license: MIT
 ---
 
-## 能力概述
+## Capability Overview
 
-基于 AWS Lambda 部署的 Jina AI Reader 代理服务，通过 JWT 鉴权抓取并解析目标网页内容，自动清除广告、导航、脚本等噪声，返回结构化的 Markdown 格式文本。
+A Jina AI Reader proxy service deployed on AWS Lambda that fetches and parses target web page content via JWT authentication, automatically removes noise such as ads, navigation, and scripts, and returns structured Markdown text.
 
-| 项目 | 说明 |
-|------|------|
+| Field | Description |
+|-------|-------------|
 | Endpoint | `GET https://app-bo4w33bsdqm9-api-ELbWqODdAgNY-gateway.appmiaoda.com/{url}` |
-| 响应格式 | `text/plain`（默认 Markdown） |
-| 鉴权方式 | platform_managed（`INTEGRATIONS_API_KEY`） |
+| Response Format | `text/plain` (Markdown by default) |
+| Authentication | platform_managed (`INTEGRATIONS_API_KEY`) |
 
-**路径参数：**
+**Path Parameters:**
 
-| 参数名 | 类型 | 必填 | 说明 |
-|--------|------|------|------|
-| `url` | string | 是 | 目标网页的完整 URL，直接拼接在 Base URL 后 |
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `url` | string | Yes | The full URL of the target web page, appended directly after the Base URL |
 
-**可选请求头（控制输出行为）：**
+**Optional Request Headers (output behavior control):**
 
-| 请求头 | 类型 | 说明 |
-|--------|------|------|
-| `X-Return-Format` | string | 返回格式：`markdown`（默认）/ `html` / `text` / `screenshot` / `pageshot` |
-| `X-With-Images-Summary` | boolean | 是否附加图片描述摘要 |
-| `X-With-Links-Summary` | boolean | 是否附加链接汇总 |
-| `X-Target-Selector` | string | CSS 选择器，仅提取特定元素内容 |
-| `X-Remove-Selector` | string | CSS 选择器，移除特定元素 |
-| `X-Timeout` | number | 页面加载超时时间（秒） |
-| `X-No-Cache` | boolean | 设为 `true` 禁用缓存，强制重新抓取 |
-| `Accept` | string | 设为 `text/event-stream` 开启流式响应（SSE） |
+| Header | Type | Description |
+|--------|------|-------------|
+| `X-Return-Format` | string | Return format: `markdown` (default) / `html` / `text` / `screenshot` / `pageshot` |
+| `X-With-Images-Summary` | boolean | Whether to append an image description summary |
+| `X-With-Links-Summary` | boolean | Whether to append a links summary |
+| `X-Target-Selector` | string | CSS selector to extract content from specific elements only |
+| `X-Remove-Selector` | string | CSS selector to remove specific elements |
+| `X-Timeout` | number | Page load timeout (seconds) |
+| `X-No-Cache` | boolean | Set to `true` to disable cache and force re-fetch |
+| `Accept` | string | Set to `text/event-stream` to enable streaming response (SSE) |
 
-**响应示例：**
+**Response Example:**
 
 ```
 Title: Example Domain
@@ -46,43 +46,43 @@ Markdown Content:
 This domain is for use in illustrative examples in documents...
 ```
 
-**响应头：**
+**Response Headers:**
 
-| 响应头 | 说明 |
-|--------|------|
+| Header | Description |
+|--------|-------------|
 | `Content-Type` | `text/plain; charset=utf-8` |
-| `x-usage-tokens` | 本次请求消耗的 Token 数量 |
-| `cf-cache-status` | Cloudflare 缓存状态 |
-| `x-amzn-RequestId` | AWS Lambda 请求 ID |
+| `x-usage-tokens` | Number of tokens consumed by this request |
+| `cf-cache-status` | Cloudflare cache status |
+| `x-amzn-RequestId` | AWS Lambda request ID |
 
-**错误码：**
+**Error Codes:**
 
-| HTTP 状态码 | 说明 |
-|-------------|------|
-| 200 | 成功，响应体为解析后的 Markdown 文本 |
-| 401 | JWT Token 缺失或无效 |
-| 403 | Token 有效但目标 URL 被 GFW 过滤 |
+| HTTP Status | Description |
+|-------------|-------------|
+| 200 | Success; response body is the parsed Markdown text |
+| 401 | JWT Token missing or invalid |
+| 403 | Token valid but target URL is blocked by GFW |
 
 ---
 
-## 生成期用法（Agent 直接调用）
+## Generation-Phase Usage (Direct Agent Invocation)
 
 ```typescript
-const apiKey = process.env["INTEGRATIONS_API_KEY"]!; // platform_managed 密钥由平台注入
+const apiKey = process.env["INTEGRATIONS_API_KEY"]!; // platform_managed key injected by the platform
 
 /**
- * 抓取目标网页并返回 Markdown 格式的正文内容。
- * @param targetUrl - 目标网页的完整 URL
- * @param options - 可选的输出控制参数
- * @param options.returnFormat - 返回格式，默认 markdown
- * @param options.withImagesSummary - 是否附加图片摘要
- * @param options.withLinksSummary - 是否附加链接汇总
- * @param options.targetSelector - CSS 选择器，仅提取特定元素
- * @param options.removeSelector - CSS 选择器，移除特定元素
- * @param options.timeout - 页面加载超时时间（秒）
- * @param options.noCache - 是否禁用缓存
- * @param options.accept - Accept 请求头，设为 `text/event-stream` 可开启 SSE 流式模式，默认 `text/html`
- * @returns 网页的 Markdown 文本内容（非流式）或 SSE 流（流式）
+ * Fetches the target web page and returns its content in Markdown format.
+ * @param targetUrl - The full URL of the target web page
+ * @param options - Optional output control parameters
+ * @param options.returnFormat - Return format, default is markdown
+ * @param options.withImagesSummary - Whether to append an image summary
+ * @param options.withLinksSummary - Whether to append a links summary
+ * @param options.targetSelector - CSS selector to extract specific elements only
+ * @param options.removeSelector - CSS selector to remove specific elements
+ * @param options.timeout - Page load timeout (seconds)
+ * @param options.noCache - Whether to disable cache
+ * @param options.accept - Accept request header; set to `text/event-stream` to enable SSE streaming mode, default is `text/html`
+ * @returns The web page's Markdown text content (non-streaming) or an SSE stream (streaming)
  */
 async function fetchWebPage(
   targetUrl: string,
@@ -120,14 +120,14 @@ async function fetchWebPage(
 
   const response = await fetch(endpoint, { method: "GET", headers });
 
-  if (response.status === 401) throw new Error("鉴权失败：JWT Token 缺失或无效");
-  if (response.status === 403) throw new Error("目标 URL 被 GFW 过滤，无法访问");
-  if (!response.ok) throw new Error(`HTTP 错误：${response.status}`);
+  if (response.status === 401) throw new Error("Authentication failed: JWT Token missing or invalid");
+  if (response.status === 403) throw new Error("Target URL is blocked by GFW and cannot be accessed");
+  if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
 
   return await response.text();
 }
 
-// 使用示例
+// Usage example
 const markdown = await fetchWebPage("https://example.com", {
   withLinksSummary: true,
 });
@@ -136,9 +136,9 @@ console.log(markdown);
 
 ---
 
-## 生成后用法（应用内通过 Edge Function 调用）
+## Post-Generation Usage (Invocation via Edge Function within the App)
 
-### Edge Function 代码
+### Edge Function Code
 
 ```typescript
 // edge-functions/web-reader.ts
@@ -147,15 +147,15 @@ import { serve } from "https://deno.land/std/http/server.ts";
 serve(async (req: Request): Promise<Response> => {
   /**
    * Web Reader Edge Function
-   * 接收前端请求，注入平台密钥后转发至上游 Jina Reader 服务。
-   * 请求体：{ url: string, options?: {...} }
-   * 响应：{ content: string }
+   * Receives frontend requests, injects the platform API key, and forwards them to the upstream Jina Reader service.
+   * Request body: { url: string, options?: {...} }
+   * Response: { content: string }
    */
   if (req.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405 });
   }
 
-  // --- 解析客户端请求 ---
+  // --- Parse client request ---
   let targetUrl: string;
   let returnFormat: string | undefined;
   let withImagesSummary: boolean | undefined;
@@ -183,7 +183,7 @@ serve(async (req: Request): Promise<Response> => {
     });
   }
 
-  // --- 注入平台密钥（严禁暴露至前端） ---
+  // --- Inject platform API key (must never be exposed to the frontend) ---
   const apiKey = Deno.env.get("INTEGRATIONS_API_KEY");
   if (!apiKey) {
     return new Response(JSON.stringify({ error: "Server configuration error" }), {
@@ -192,7 +192,7 @@ serve(async (req: Request): Promise<Response> => {
     });
   }
 
-  // --- 构造请求头 ---
+  // --- Build request headers ---
   const upstreamHeaders: Record<string, string> = {
     "X-Gateway-Authorization": `Bearer ${apiKey}`,
   };
@@ -208,14 +208,14 @@ serve(async (req: Request): Promise<Response> => {
   if (timeout !== undefined) upstreamHeaders["X-Timeout"] = String(timeout);
   if (noCache) upstreamHeaders["X-No-Cache"] = "true";
 
-  // --- 调用上游服务 ---
+  // --- Call upstream service ---
   const encodedUrl = encodeURIComponent(targetUrl);
   const upstream = await fetch(
     `https://app-bo4w33bsdqm9-api-ELbWqODdAgNY-gateway.appmiaoda.com/${encodedUrl}`,
     { method: "GET", headers: upstreamHeaders }
   );
 
-  // 转发鉴权/过滤错误
+  // Forward authentication/filtering errors
   if (upstream.status === 401 || upstream.status === 403) {
     const errText = await upstream.text();
     return new Response(JSON.stringify({ error: errText || `Upstream error: ${upstream.status}` }), {
@@ -224,7 +224,7 @@ serve(async (req: Request): Promise<Response> => {
     });
   }
 
-  // 转发配额/余额错误
+  // Forward quota/balance errors
   if (upstream.status === 429 || upstream.status === 402) {
     const errText = await upstream.text();
     return new Response(errText, {
@@ -248,16 +248,16 @@ serve(async (req: Request): Promise<Response> => {
 });
 ```
 
-### 前端调用代码（Web / MiniProgram 通用）
+### Frontend Client Code (Web / MiniProgram Universal)
 
-**推荐方式（supabase client 可用时）：**
+**Recommended approach (when supabase client is available):**
 
 ```typescript
 /**
- * 通过 Edge Function 抓取网页内容。
- * @param url - 目标网页完整 URL
- * @param options - 可选的输出控制参数
- * @returns 网页 Markdown 文本
+ * Fetches web page content via Edge Function.
+ * @param url - The full URL of the target web page
+ * @param options - Optional output control parameters
+ * @returns Web page Markdown text
  */
 async function fetchWebPage(
   url: string,
@@ -275,19 +275,19 @@ async function fetchWebPage(
     body: { url, ...options },
   });
   if (error) throw error;
-  if (!data?.content) throw new Error("返回内容为空");
+  if (!data?.content) throw new Error("Response content is empty");
   return data.content;
 }
 ```
 
-**备用方式（无法使用 supabase client 时）：**
+**Fallback approach (when supabase client is unavailable):**
 
 ```typescript
 /**
- * 通过原生 fetch 调用 Edge Function 抓取网页内容。
- * @param url - 目标网页完整 URL
- * @param options - 可选的输出控制参数
- * @returns 网页 Markdown 文本
+ * Fetches web page content via Edge Function using native fetch.
+ * @param url - The full URL of the target web page
+ * @param options - Optional output control parameters
+ * @returns Web page Markdown text
  */
 async function fetchWebPage(
   url: string,
@@ -309,86 +309,86 @@ async function fetchWebPage(
 
   if (res.status === 429) {
     const err = await res.json();
-    throw new Error(`配额已用尽：${err.message ?? res.statusText}`);
+    throw new Error(`Quota exhausted: ${err.message ?? res.statusText}`);
   }
   if (res.status === 402) {
     const err = await res.json();
-    throw new Error(`余额不足：${err.message ?? res.statusText}`);
+    throw new Error(`Insufficient balance: ${err.message ?? res.statusText}`);
   }
-  if (!res.ok) throw new Error(`请求失败：${res.status}`);
+  if (!res.ok) throw new Error(`Request failed: ${res.status}`);
 
   const json = await res.json();
-  if (!json.content) throw new Error("返回内容为空");
+  if (!json.content) throw new Error("Response content is empty");
   return json.content;
 }
 ```
 
 ---
 
-## 参数说明
+## Parameters
 
-### 请求参数
+### Request Parameters
 
-| 参数名 | 类型 | 必填 | 说明 |
-|--------|------|------|------|
-| `url` | string | 是 | 目标网页的完整 URL，含 scheme（如 `https://example.com`） |
-| `returnFormat` | string | 否 | 返回格式：`markdown`（默认）/ `html` / `text` / `screenshot` / `pageshot` |
-| `withImagesSummary` | boolean | 否 | 是否在内容中附加图片描述摘要 |
-| `withLinksSummary` | boolean | 否 | 是否在内容末尾附加链接汇总 |
-| `targetSelector` | string | 否 | CSS 选择器，仅提取页面特定元素内容 |
-| `removeSelector` | string | 否 | CSS 选择器，从结果中移除特定元素 |
-| `timeout` | number | 否 | 等待页面加载的超时时间（秒） |
-| `noCache` | boolean | 否 | 设为 `true` 禁用缓存，强制重新抓取 |
-| `accept` | string | 否 | 请求头 `Accept` 值：`text/html`（默认）或 `text/event-stream`（开启 SSE 流式模式） |
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `url` | string | Yes | The full URL of the target web page, including scheme (e.g. `https://example.com`) |
+| `returnFormat` | string | No | Return format: `markdown` (default) / `html` / `text` / `screenshot` / `pageshot` |
+| `withImagesSummary` | boolean | No | Whether to append an image description summary to the content |
+| `withLinksSummary` | boolean | No | Whether to append a links summary at the end of the content |
+| `targetSelector` | string | No | CSS selector to extract content from specific page elements only |
+| `removeSelector` | string | No | CSS selector to remove specific elements from the result |
+| `timeout` | number | No | Timeout for waiting for the page to load (seconds) |
+| `noCache` | boolean | No | Set to `true` to disable cache and force re-fetch |
+| `accept` | string | No | `Accept` header value: `text/html` (default) or `text/event-stream` (enable SSE streaming mode) |
 
-### 返回字段说明
+### Response Fields
 
-| 字段路径 | 类型 | 说明 |
-|----------|------|------|
-| `content` | string | 目标网页的结构化 Markdown 文本，包含标题、正文及可选的图片摘要、链接列表 |
-
----
-
-## 注意事项
-
-- **密钥安全**：`INTEGRATIONS_API_KEY` 仅可在 Edge Function 服务端读取，严禁暴露到前端。
-- **错误处理**：务必处理 401（Token 无效）、403（GFW 过滤）、429（配额超限）和 402（余额不足）。
-- **计费**：本插件免费（`original_price: 0.00`，`enable_billing: false`），但仍会统计调用次数。
-- **GFW 过滤**：JWT Payload 中的 `filter_gfw` 字段控制是否过滤 GFW 屏蔽域名，被过滤的 URL 将返回 403。
-- **URL 编码**：目标 URL 需经过 `encodeURIComponent` 编码后再拼接到路径中，避免特殊字符导致路由解析错误。
-- **响应格式**：默认返回 `text/plain` 格式的 Markdown，Edge Function 已将其包装为 `{ content: string }` JSON，方便前端直接使用。
-- **流式响应**：如需流式接收内容，可在请求头中设置 `Accept: text/event-stream`，SSE 流式处理实现见下方"SSE 流式处理"章节。
+| Field | Type | Description |
+|-------|------|-------------|
+| `content` | string | Structured Markdown text of the target web page, including title, body, and optional image summary and links list |
 
 ---
 
-## SSE 流式处理
+## Notes
 
-当请求头设置 `Accept: text/event-stream` 时，上游服务以 SSE（Server-Sent Events）格式流式返回内容，每个 SSE 事件携带部分 Markdown 文本。流式模式适用于大页面实时渲染场景。
+- **API Key Security**: `INTEGRATIONS_API_KEY` may only be read on the Edge Function server side; it must never be exposed to the frontend.
+- **Error Handling**: Always handle 401 (invalid token), 403 (GFW filter), 429 (quota exceeded), and 402 (insufficient balance).
+- **Billing**: This plugin is free (`original_price: 0.00`, `enable_billing: false`), but call counts are still recorded.
+- **GFW Filtering**: The `filter_gfw` field in the JWT Payload controls whether GFW-blocked domains are filtered; blocked URLs will return 403.
+- **URL Encoding**: The target URL must be encoded with `encodeURIComponent` before being appended to the path to prevent special characters from causing routing errors.
+- **Response Format**: Returns Markdown in `text/plain` format by default; the Edge Function wraps it as `{ content: string }` JSON for convenient frontend consumption.
+- **Streaming Response**: To receive content as a stream, set `Accept: text/event-stream` in the request headers. See the "SSE Streaming" section below for the implementation.
 
-### SSE 事件格式
+---
+
+## SSE Streaming
+
+When the request header is set to `Accept: text/event-stream`, the upstream service returns content as an SSE (Server-Sent Events) stream, with each SSE event carrying a partial Markdown text chunk. Streaming mode is suitable for real-time rendering of large pages.
+
+### SSE Event Format
 
 ```
-data: <部分 Markdown 文本>
+data: <partial Markdown text>
 
-data: <更多 Markdown 文本>
+data: <more Markdown text>
 
 data: [DONE]
 
 ```
 
-- 每条 `data:` 行携带一段内容片段。
-- 收到 `data: [DONE]` 表示流结束。
+- Each `data:` line carries a content chunk.
+- Receiving `data: [DONE]` indicates the stream has ended.
 
-### 生成期 SSE 流式调用示例
+### Generation-Phase SSE Streaming Example
 
 ```typescript
 const apiKey = process.env["INTEGRATIONS_API_KEY"]!;
 
 /**
- * 以 SSE 流式模式抓取目标网页，实时处理返回的 Markdown 片段。
- * @param targetUrl - 目标网页的完整 URL
- * @param onChunk - 每收到一段内容时的回调函数
- * @returns 完整 Markdown 文本
+ * Fetches the target web page in SSE streaming mode, processing returned Markdown chunks in real time.
+ * @param targetUrl - The full URL of the target web page
+ * @param onChunk - Callback function invoked each time a content chunk is received
+ * @returns The complete Markdown text
  */
 async function fetchWebPageSSE(
   targetUrl: string,
@@ -406,10 +406,10 @@ async function fetchWebPageSSE(
     },
   });
 
-  if (response.status === 401) throw new Error("鉴权失败：JWT Token 缺失或无效");
-  if (response.status === 403) throw new Error("目标 URL 被 GFW 过滤，无法访问");
-  if (!response.ok) throw new Error(`HTTP 错误：${response.status}`);
-  if (!response.body) throw new Error("响应体为空，无法读取流");
+  if (response.status === 401) throw new Error("Authentication failed: JWT Token missing or invalid");
+  if (response.status === 403) throw new Error("Target URL is blocked by GFW and cannot be accessed");
+  if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+  if (!response.body) throw new Error("Response body is empty, cannot read stream");
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -438,22 +438,22 @@ async function fetchWebPageSSE(
   return fullContent;
 }
 
-// 示例：流式抓取并实时打印
+// Example: stream-fetch and print in real time
 await fetchWebPageSSE("https://example.com", (chunk) => {
   Deno.stdout.write(new TextEncoder().encode(chunk));
 });
 ```
 
-### 前端 SSE 流式调用示例（Web 平台）
+### Frontend SSE Streaming Example (Web Platform)
 
-前端需通过 Edge Function 中转流式请求，Edge Function 需将上游 SSE 流透传给客户端。
+The frontend must relay the streaming request through an Edge Function, which needs to proxy the upstream SSE stream to the client.
 
 ```typescript
 /**
- * 通过 Edge Function SSE 代理抓取网页，实时处理内容片段。
- * @param url - 目标网页完整 URL
- * @param onChunk - 每收到一段内容时的回调函数
- * @returns 完整 Markdown 文本
+ * Fetches a web page via Edge Function SSE proxy, processing content chunks in real time.
+ * @param url - The full URL of the target web page
+ * @param onChunk - Callback function invoked each time a content chunk is received
+ * @returns The complete Markdown text
  */
 async function fetchWebPageStream(
   url: string,
@@ -468,8 +468,8 @@ async function fetchWebPageStream(
     body: JSON.stringify({ url }),
   });
 
-  if (!res.ok) throw new Error(`请求失败：${res.status}`);
-  if (!res.body) throw new Error("响应体为空");
+  if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+  if (!res.body) throw new Error("Response body is empty");
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();

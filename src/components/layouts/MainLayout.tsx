@@ -25,6 +25,7 @@ import {
   User,
   Braces,
   Sparkles,
+  Languages,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -40,8 +41,23 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { useAuth } from '@/contexts/AuthContext';
 import { useTheme, type ThemeMode } from '@/contexts/ThemeContext';
+import { useTranslationStore } from '@/stores/translationStore';
+import { viewportTranslator } from '@/lib/auto-translator';
+import { useEffect } from 'react';
 import { cn } from '@/lib/utils';
 import i18n from "@/i18n";
+
+// 初始化翻译服务组件
+function AutoTranslatorInit() {
+  const targetLang = useTranslationStore(state => state.targetLang);
+  
+  useEffect(() => {
+    viewportTranslator.setConfig(targetLang);
+  }, [targetLang]);
+  
+  return null;
+}
+
 
 // 应用 Logo（侧边栏用）——内联 SVG，无路径依赖，GitHub Pages / file:// 均可正常显示
 function AppLogo({ size = 20 }: { size?: number }) {
@@ -336,6 +352,9 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
   const location = useLocation();
   const navigate = useNavigate();
 
+  const targetLang = useTranslationStore(state => state.targetLang);
+  const setTargetLang = useTranslationStore(state => state.setTargetLang);
+
   const ThemeIcon = themeIcons[currentTheme];
 
   const cycleTheme = () => {
@@ -357,6 +376,7 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
 
   return (
     <div className="flex min-h-screen w-full bg-background">
+      <AutoTranslatorInit />
       {/* 桌面端侧边栏 */}
       <aside
         className={cn(
@@ -433,6 +453,35 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
                 {currentTheme === 'light' ? i18n.t('当前：浅色') : currentTheme === 'dark' ? i18n.t('当前：深色') : i18n.t('当前：跟随系统')}
               </TooltipContent>
             </Tooltip>
+
+            {/* 自动翻译 */}
+            <DropdownMenu>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className={cn("text-muted-foreground hover:bg-secondary", targetLang !== 'off' && "text-primary")}
+                    >
+                      <Languages className="w-4 h-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                </TooltipTrigger>
+                <TooltipContent>{i18n.t('自动翻译')}</TooltipContent>
+              </Tooltip>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => setTargetLang('off')}>
+                  <span className={targetLang === 'off' ? 'font-bold text-primary' : ''}>关闭翻译</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setTargetLang('zh')}>
+                  <span className={targetLang === 'zh' ? 'font-bold text-primary' : ''}>翻译为中文</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setTargetLang('en')}>
+                  <span className={targetLang === 'en' ? 'font-bold text-primary' : ''}>翻译为英文</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
 
             {/* 通知 */}
             <Button

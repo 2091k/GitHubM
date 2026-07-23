@@ -19,12 +19,17 @@
 
 | 参数名 | 类型 | 必填 | 默认值 | 说明 |
 |--------|------|------|--------|------|
-| `image` | string | 是 | — | 图片 Base64 编码（jpg/jpeg/png/bmp 格式） |
-| `language_type` | string | 否 | `CHN_ENG` | 识别语言类型，支持 `auto_detect`、`ENG`、`JAP`、`KOR`、`FRE` 等 20+ 语种 |
-| `detect_direction` | boolean | 否 | `false` | 是否检测图像朝向（0:正向, 1:逆时针90°, 2:180°, 3:270°） |
-| `probability` | boolean | 否 | `false` | 是否返回识别结果置信度 |
-| `multidirectional_recognize` | boolean | 否 | `false` | 是否开启多方向文字识别 |
-| `ofd_file_num` | string | 否 | `1`（第1页） | OFD 文件页码 |
+| `image` | string | 与 url/pdf_file/ofd_file 四选一 | — | 图像数据，base64编码后进行urlencode，大小不超过10M，最短边至少15px，最长边最大8192px，支持jpg/jpeg/png/bmp格式。**优先级最高**，存在时其他输入字段失效 |
+| `url` | string | 与 image/pdf_file/ofd_file 四选一 | — | 图片完整URL，URL长度不超过1024字节，对应图片大小不超过10M，支持jpg/jpeg/png/bmp格式。请注意关闭URL防盗链 |
+| `pdf_file` | string | 与 image/url/ofd_file 四选一 | — | PDF文件，base64编码后进行urlencode，大小不超过10M |
+| `pdf_file_num` | string | 否 | `1`（第1页） | 需要识别的PDF文件对应页码，当 pdf_file 参数有效时生效 |
+| `ofd_file` | string | 与 image/url/pdf_file 四选一 | — | OFD文件，base64编码后进行urlencode，大小不超过10M |
+| `ofd_file_num` | string | 否 | `1`（第1页） | 需要识别的OFD文件对应页码，当 ofd_file 参数有效时生效 |
+| `language_type` | string | 否 | `CHN_ENG` | 识别语言类型，支持 `auto_detect`、`CHN_ENG`、`ENG`、`JAP`、`KOR`、`FRE`、`SPA`、`POR`、`GER`、`ITA`、`RUS`、`DAN`、`DUT`、`MAL`、`SWE`、`IND`、`POL`、`ROM`、`TUR`、`GRE`、`HUN`、`THA`、`VIE`、`ARA`、`HIN` |
+| `detect_direction` | string | 否 | `false` | 是否检测图像朝向，可选值 `true`/`false` |
+| `paragraph` | string | 否 | `false` | 是否输出段落信息，可选值 `true`/`false` |
+| `probability` | string | 否 | `false` | 是否返回识别结果中每一行的置信度，可选值 `true`/`false` |
+| `multidirectional_recognize` | string | 否 | `false` | 是否开启行级别的多方向文字识别，可选值 `true`/`false` |
 
 ---
 
@@ -35,7 +40,7 @@
 | 字段路径 | 类型 | 说明 |
 |----------|------|------|
 | `log_id` | number | 唯一日志 ID，用于问题定位 |
-| `direction` | number | 图像方向（0:正向, 1:逆时针90°, 2:180°, 3:270°），`detect_direction=true` 时返回 |
+| `direction` | number | 图像方向（-1:未定义, 0:正向, 1:逆时针90°, 2:逆时针180°, 3:逆时针270°），`detect_direction=true` 时返回 |
 | `words_result_num` | number | 识别结果总数 |
 | `words_result` | array | 识别结果数组 |
 | `words_result[].words` | string | 识别出的文字内容 |
@@ -45,16 +50,16 @@
 | `words_result[].probability.min` | number | 最低置信度 |
 | `paragraphs_result?` | array | 段落检测结果，`paragraph=true` 时返回 |
 | `paragraphs_result[].words_result_idx` | array | 段落包含的 words_result 下标列表 |
-| `paragraphs_result_num?` | number | 段落总数 |
-| `error_code` | number | 错误码（0 表示成功） |
-| `error_msg` | string | 错误信息（成功时为"成功"） |
+| `paragraphs_result_num?` | number | 段落总数，`paragraph=true` 时返回 |
+| `pdf_file_size?` | string | 传入PDF文件的总页数，`pdf_file` 参数有效时返回 |
+| `ofd_file_size?` | string | 传入OFD文件的总页数，`ofd_file` 参数有效时返回 |
 
-### 失败响应
+### 错误响应
 
 | 字段路径 | 类型 | 说明 |
 |----------|------|------|
-| `error_code` | number | 非 0 的错误码 |
-| `error_msg` | string | 错误描述 |
+| `error_code` | number | 错误码 |
+| `error_msg` | string | 错误描述信息 |
 
 ---
 
@@ -86,9 +91,10 @@ interface OcrResult {
  * @param imageBase64 - 图片的 Base64 编码字符串
  * @param options - 可选参数
  * @param options.languageType - 识别语言类型，默认 CHN_ENG
- * @param options.detectDirection - 是否检测图像朝向，默认 false
- * @param options.probability - 是否返回置信度，默认 false
- * @param options.multidirectionalRecognize - 是否开启多方向文字识别，默认 false
+ * @param options.detectDirection - 是否检测图像朝向，默认 false；API 接受字符串 "true"/"false"
+ * @param options.paragraph - 是否输出段落信息，默认 false；API 接受字符串 "true"/"false"
+ * @param options.probability - 是否返回置信度，默认 false；API 接受字符串 "true"/"false"
+ * @param options.multidirectionalRecognize - 是否开启多方向文字识别，默认 false；API 接受字符串 "true"/"false"
  * @param options.ofdFileNum - OFD 文件页码，默认第 1 页
  * @returns OcrResult 识别结果
  */
@@ -97,6 +103,7 @@ async function callOcrAccurateBasic(
   options: {
     languageType?: string;
     detectDirection?: boolean;
+    paragraph?: boolean;
     probability?: boolean;
     multidirectionalRecognize?: boolean;
     ofdFileNum?: string;
@@ -106,6 +113,9 @@ async function callOcrAccurateBasic(
   if (options.languageType) params.language_type = options.languageType;
   if (options.detectDirection !== undefined) {
     params.detect_direction = String(options.detectDirection);
+  }
+  if (options.paragraph !== undefined) {
+    params.paragraph = String(options.paragraph);
   }
   if (options.probability !== undefined) {
     params.probability = String(options.probability);
@@ -179,6 +189,7 @@ serve(async (req: Request): Promise<Response> => {
   let image: string;
   let languageType: string | undefined;
   let detectDirection: boolean | undefined;
+  let paragraph: boolean | undefined;
   let probability: boolean | undefined;
   let multidirectionalRecognize: boolean | undefined;
   let ofdFileNum: string | undefined;
@@ -189,6 +200,7 @@ serve(async (req: Request): Promise<Response> => {
     if (!image) throw new Error("Missing image");
     languageType = body.language_type;
     detectDirection = body.detect_direction;
+    paragraph = body.paragraph;
     probability = body.probability;
     multidirectionalRecognize = body.multidirectional_recognize;
     ofdFileNum = body.ofd_file_num;
@@ -212,6 +224,7 @@ serve(async (req: Request): Promise<Response> => {
   const params: Record<string, string> = { image };
   if (languageType) params.language_type = languageType;
   if (detectDirection !== undefined) params.detect_direction = String(detectDirection);
+  if (paragraph !== undefined) params.paragraph = String(paragraph);
   if (probability !== undefined) params.probability = String(probability);
   if (multidirectionalRecognize !== undefined) {
     params.multidirectional_recognize = String(multidirectionalRecognize);

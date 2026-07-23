@@ -201,8 +201,8 @@ importers:
         specifier: ^0.576.0
         version: 0.576.0(react@18.3.1)
       miaoda-react-devkit:
-        specifier: 0.1.1-beta.14
-        version: 0.1.1-beta.14(rolldown-vite@7.3.1(@emnapi/core@1.10.0)(@emnapi/runtime@1.10.0)(@types/node@25.9.1)(jiti@1.21.7))
+        specifier: 0.1.1-beta.15
+        version: 0.1.1-beta.15(rolldown-vite@7.3.1(@emnapi/core@1.10.0)(@emnapi/runtime@1.10.0)(@types/node@25.9.1)(jiti@1.21.7))
       motion:
         specifier: ^12.23.25
         version: 12.40.0(react-dom@18.3.1(react@18.3.1))(react@18.3.1)
@@ -281,6 +281,9 @@ importers:
       zod:
         specifier: ^3.25.76
         version: 3.25.76
+      zustand:
+        specifier: ^5.0.14
+        version: 5.0.14(@types/react@19.2.16)(react@18.3.1)(use-sync-external-store@1.6.0(react@18.3.1))
     devDependencies:
       '@biomejs/biome':
         specifier: 2.4.5
@@ -3429,8 +3432,8 @@ packages:
   mermaid@11.15.0:
     resolution: {integrity: sha512-pTMbcf3rWdtLiYGpmoTjHEpeY8seiy6sR+9nD7LOs8KfUbHE4lOUAprTRqRAcWSQ6MQpdX+YEsxShtGsINtPtw==}
 
-  miaoda-react-devkit@0.1.1-beta.14:
-    resolution: {integrity: sha512-4PpZRBSIbYuATDMGbvdzwGzHqxzOx85PMhsZRdqf3BRBXf1pjPrv5b/xHfSQ1vRa0MV0TNB5y2IhVWKV0aXg7A==}
+  miaoda-react-devkit@0.1.1-beta.15:
+    resolution: {integrity: sha512-GkJDMiXB6wK35I9IxRDZP5l5F0OeMrBIzuabrHvtnKiZWcTbwZQW4gUCA7ftdlmxVr2xbejSHDUicc/ZOryBUw==}
     peerDependencies:
       '@sentry/core': '>=8.0.0'
       '@sentry/react': '>=8.0.0'
@@ -4609,6 +4612,24 @@ packages:
 
   zod@3.25.76:
     resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
+
+  zustand@5.0.14:
+    resolution: {integrity: sha512-/8tAspM5LMPr28b3fwLYrtdj77ECpfZviaP75CMTnwO8ISyaE4GDIG/9rDDYq/cH9D2Xw2A2RXglLInmVBQB/g==}
+    engines: {node: '>=12.20.0'}
+    peerDependencies:
+      '@types/react': '>=18.0.0'
+      immer: '>=9.0.6'
+      react: '>=18.0.0'
+      use-sync-external-store: '>=1.2.0'
+    peerDependenciesMeta:
+      '@types/react':
+        optional: true
+      immer:
+        optional: true
+      react:
+        optional: true
+      use-sync-external-store:
+        optional: true
 
   zwitch@2.0.4:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
@@ -8203,7 +8224,7 @@ snapshots:
       ts-dedent: 2.2.0
       uuid: 14.0.0
 
-  miaoda-react-devkit@0.1.1-beta.14(rolldown-vite@7.3.1(@emnapi/core@1.10.0)(@emnapi/runtime@1.10.0)(@types/node@25.9.1)(jiti@1.21.7)):
+  miaoda-react-devkit@0.1.1-beta.15(rolldown-vite@7.3.1(@emnapi/core@1.10.0)(@emnapi/runtime@1.10.0)(@types/node@25.9.1)(jiti@1.21.7)):
     dependencies:
       '@babel/parser': 7.29.7
       '@babel/traverse': 7.29.7
@@ -9577,5 +9598,11 @@ snapshots:
       yargs-parser: 22.0.0
 
   zod@3.25.76: {}
+
+  zustand@5.0.14(@types/react@19.2.16)(react@18.3.1)(use-sync-external-store@1.6.0(react@18.3.1)):
+    optionalDependencies:
+      '@types/react': 19.2.16
+      react: 18.3.1
+      use-sync-external-store: 1.6.0(react@18.3.1)
 
   zwitch@2.0.4: {}

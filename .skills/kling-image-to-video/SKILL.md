@@ -1,101 +1,197 @@
 ---
 name: kling-image-to-video
-description: 基于 Kling AI 将参考图片生成音画同步视频，支持首帧/尾帧控制、运动笔刷、摄像机控制；适用于创意内容生成、电商视频化、图片动态化等场景
+description: Generate AI videos from static images using Kling's Image-to-Video API with audio-visual sync. Use this skill whenever the user wants to animate an image, convert a photo to video, create an AI video from a picture, add motion to a still image, generate video from image with camera movement or voice, or use Kling image2video — even if they don't say "Kling" explicitly.
 license: MIT
 ---
 
-## 能力概述
+# Kling Image-to-Video (Audio-Visual Sync)
 
-该 Skill 调用 Kling AI 图生视频（音画同步）接口，根据输入的参考图片和文本提示词生成高质量视频，支持音画同步、运动笔刷、摄像机控制等高级功能。
+Generate high-quality videos from static images using Kling AI. Supports multiple model versions (kling-v1 through kling-v2-6), professional quality mode, camera control, motion brush trajectories, end-frame control, and voice synthesis. Videos can be 5s or 10s.
 
-**工作流：异步任务 — 提交 → 轮询 → 获取结果**
+This is an **async** skill: submitting the task returns a `task_id` immediately; the video becomes available only after polling until `task_status` is `succeed`.
 
-| 步骤 | API | Endpoint |
-|------|-----|----------|
-| 1. 创建任务 | 图生视频 - 创建任务 | POST `https://app-bo4w33bsdqm9-api-DY8MN3QBydBa-gateway.appmiaoda.com/v1/videos/image2video` |
-| 2. 查询单个任务 | 图生视频 - 查询任务（单个） | GET `https://app-bo4w33bsdqm9-api-zYkZzgKook1L-gateway.appmiaoda.com/v1/videos/image2video/{id}` |
-| 3. 查询任务列表 | 图生视频 - 查询任务（列表） | GET `https://app-bo4w33bsdqm9-api-n9QVoDJ6oykL-gateway.appmiaoda.com/v1/videos/image2video` |
-
-**核心能力：**
-- 支持模型版本：kling-v2-6（及历史版本 kling-v1、kling-v1-5 等）
-- 视频时长：5 秒 / 10 秒
-- 生成模式：std（标准）/ pro（高品质）
-- 支持首帧（image）或首尾帧（image + image_tail）控制
-- 支持运动笔刷（static_mask / dynamic_masks）
-- 支持音画同步（voice_list + sound，仅 v2.6+）
-- 返回视频 URL（有效期 30 天，需及时转存）
-
-**多平台差异：**
-
-| 项目 | Web | MiniProgram |
-|------|-----|-------------|
-| Edge Function 视频转存 | Appendix A（Storage 转存）| 同 Web |
-| 前端调用 | `supabase.functions.invoke` | `supabase.functions.invoke` |
-| 视频播放 | `<video src=publicUrl>` | `Taro.createVideoContext` |
-
-**计费：** 创建任务接口按调用次数计费（折扣价 235.00，原价 377.30，单位：元/千次）；查询接口不计费。
+> Read `references/create-task-api.md` for the full submit-task specification and Edge Function code.
+> Read `references/query-task-api.md` for the full query-task specification and Edge Function code.
 
 ---
 
-## 生成期用法（Agent 直接调用）
+## End-to-End Workflow
 
-完整异步工作流，详见 `references/image2video-api.md`。
+### Generation-time usage (Agent direct call)
 
-典型流程：
+Use this pattern when working directly as an agent (no application frontend needed).
 
 ```typescript
-// 完整异步工作流：提交 → 轮询 → 结果
-async function generateAndWait(image: string, prompt: string): Promise<string> {
-  // Step 1: 提交创建任务
-  const { taskId } = await submitImage2VideoTask(image, prompt);
+const apiKey = process.env["INTEGRATIONS_API_KEY"]!; // platform_managed — injected by platform
 
-  // Step 2: 轮询直到成功或失败
+// Step 1: Submit the image-to-video task
+async function submitImage2VideoTask(params: {
+  image: string;           // Required: Base64 string or accessible URL (jpg/jpeg/png, max 10MB)
+  prompt?: string;         // Optional: text description, max 2500 chars
+  model_name?: string;     // Optional: default "kling-v2-6"
+  mode?: "std" | "pro";   // Optional: default "pro"
+  duration?: "5" | "10";  // Optional: default "5"
+  image_tail?: string;     // Optional: end-frame control image
+  negative_prompt?: string;
+  cfg_scale?: number;      // [0,1], not supported in v2.x
+  voice_list?: { voice_id: string }[];
+  sound?: "on" | "off";
+  static_mask?: string;    // Optional: static motion brush mask image (Base64 or URL)
+  camera_control?: {
+    type: "simple" | "down_back" | "forward_up" | "right_turn_forward" | "left_turn_forward";
+    config?: { horizontal?: number; vertical?: number; pan?: number; tilt?: number; roll?: number; zoom?: number };
+  };
+  external_task_id?: string;
+  callback_url?: string;
+}): Promise<string> {
+  const response = await fetch("https://api-eLMlJj3KJD89@api-singapore.klingai.com/v1/videos/image2video", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Gateway-Authorization": `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(params),
+  });
+
+  if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+  const json = await response.json();
+  if (json.code !== 0) throw new Error(`API error ${json.code}: ${json.message}`);
+  return json.data.task_id;
+}
+
+// Step 2: Poll until the video is ready
+async function pollUntilDone(taskId: string): Promise<{ id: string; url: string; duration: string }[]> {
   const POLL_INTERVAL_MS = 7000;
-  const TIMEOUT_MS = 10 * 60 * 1000; // 10 分钟
+  const TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
   const deadline = Date.now() + TIMEOUT_MS;
 
   while (Date.now() < deadline) {
     await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
-    const result = await queryImage2VideoTask(taskId);
-    if (result.task_status === "succeed") return result.task_result.videos[0].url;
-    if (result.task_status === "failed") {
-      throw new Error(`Task failed: ${result.task_status_msg}`);
-    }
-    // submitted / processing → 继续轮询
+
+    const res = await fetch(
+      `https://api-rLobzpqX85m9@api-singapore.klingai.com/v1/videos/image2video/${taskId}`,
+      {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Gateway-Authorization": `Bearer ${apiKey}`,
+        },
+      }
+    );
+    if (!res.ok) throw new Error(`Poll HTTP error: ${res.status}`);
+    const json = await res.json();
+    if (json.code !== 0) throw new Error(`Poll API error ${json.code}: ${json.message}`);
+
+    const { task_status, task_status_msg, task_result } = json.data;
+    if (task_status === "succeed") return task_result.videos;
+    if (task_status === "failed") throw new Error(`Task failed: ${task_status_msg}`);
+    // submitted / processing — keep polling
   }
   throw new Error(`Task ${taskId} timed out after 10 minutes`);
 }
+
+// Full workflow
+async function generateVideo(image: string, prompt?: string) {
+  const taskId = await submitImage2VideoTask({ image, prompt });
+  console.log(`Task submitted: ${taskId}`);
+  const videos = await pollUntilDone(taskId);
+  return videos; // [{ id, url, duration }]
+}
 ```
 
-详见 `references/image2video-api.md` 中的完整生成期代码（含所有参数）。
+**Generation-time file download (required):**
 
-**生成期文件下载（必须执行）：**
-
-生成接口返回的 URL 是 CDN 临时链接，在生成期（Agent 直接调用场景）获得 URL 后，**必须立即使用 Bash 工具将文件下载到本地**，以便用户查看结果。
+The video URL returned by the generation API is an ephemeral CDN link with a 30-day TTL. After obtaining the URL during generation (Agent direct call scenario), **immediately use the Bash tool to download the file locally** so the user can view the result.
 
 ```bash
-curl -L -o <本地路径> "<生成的文件 URL>"
+curl -L -o ./output_video.mp4 "<generated video URL>"
 ```
 
-**完整生成期工作流（含下载步骤）：**
+**Complete generation-time workflow (including download step):**
 
-1. 调用生成函数获取文件 URL
-2. 使用 Bash 工具执行 `curl -L -o <本地路径> "<url>"` 将文件下载到本地
-3. 告知用户文件已保存到对应路径
+1. Call `submitImage2VideoTask` to obtain the `task_id`
+2. Call `pollUntilDone` to poll until status is `succeed` and obtain the video URL
+3. Use the Bash tool to run `curl -L -o <local-path>.mp4 "<url>"` to download the video locally
+4. Inform the user of the file path where the video has been saved
 
-> **注意**：上游 CDN 链接有时效性，应在获得 URL 后立即下载，不要延迟。
+> **Note**: The upstream CDN link expires after 30 days; download immediately after obtaining the URL.
 
 ---
 
-## 生成后用法（应用内通过 Edge Function 调用）
+## Post-generation usage (in-app via Edge Function)
 
-应用内分两个 Edge Function：
+For production apps, use two Edge Functions — one per endpoint — so the platform API key never reaches the browser. After the query Edge Function retrieves the video URL, transfer it to Supabase Storage for persistence.
 
-1. **`kling-image2video-submit`** — 接收前端请求，调用创建任务接口，返回 `task_id`
-2. **`kling-image2video-query`** — 接收 `task_id`，查询任务状态和结果，成功时将视频 URL 转存至 Supabase Storage 并返回 `publicUrl`
+> Read `references/create-task-api.md` for the complete submit Edge Function (`edge-functions/kling-submit-image2video.ts`).
+> Read `references/query-task-api.md` for the complete query Edge Function (`edge-functions/kling-query-image2video.ts`) including Supabase Storage transfer.
 
-前端轮询逻辑在应用层实现（提交后每 7 秒轮询一次，超时 10 分钟）。
+**Frontend polling loop:**
 
-**Web 和 MiniProgram 平台共用相同的 Edge Function，前端均通过 `supabase.functions.invoke` 调用。**
+```typescript
+// 1. Submit task via Edge Function
+const { data: submitData, error: submitError } = await supabase.functions.invoke(
+  "kling-submit-image2video",
+  { body: { image, prompt, model_name: "kling-v2-6", mode: "pro", duration: "5" } }
+);
+if (submitError) throw submitError;
+const taskId: string = submitData.data.task_id;
 
-详见 `references/image2video-api.md` 中的完整 Edge Function 和前端代码。
+// 2. Poll via Edge Function until done
+const POLL_INTERVAL_MS = 7000;
+const TIMEOUT_MS = 10 * 60 * 1000;
+const deadline = Date.now() + TIMEOUT_MS;
+
+while (Date.now() < deadline) {
+  await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+
+  const { data: queryData, error: queryError } = await supabase.functions.invoke(
+    "kling-query-image2video",
+    { body: { task_id: taskId } }
+  );
+  if (queryError) throw queryError;
+
+  const { task_status, task_status_msg, task_result } = queryData.data;
+  if (task_status === "succeed") {
+    // task_result.videos[].url is now a persistent Supabase Storage URL
+    return task_result.videos;
+  }
+  if (task_status === "failed") throw new Error(`Generation failed: ${task_status_msg}`);
+}
+throw new Error("Timed out waiting for video generation");
+```
+
+---
+
+## Parameter Summary
+
+For full parameter tables, see `references/create-task-api.md` (submit) and `references/query-task-api.md` (query).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `image` | string | Yes | Reference image (Base64 or URL), jpg/jpeg/png, ≤10MB, ≥300px, aspect ratio 1:2.5~2.5:1 |
+| `prompt` | string | No | Positive text prompt, ≤2500 characters |
+| `model_name` | string | No | Model version, default `kling-v2-6` |
+| `mode` | string | No | Generation mode: `std` / `pro`, default `pro` |
+| `duration` | string | No | Video duration (seconds): `5` or `10`, default `5` |
+| `image_tail` | string | No | End-frame control image, same format requirements as `image` |
+| `static_mask` | string | No | Static motion brush mask image (Base64 or URL); aspect ratio must match `image` |
+| `camera_control` | object | No | Camera movement control; mutually exclusive with `image_tail` and `dynamic_masks`/`static_mask` |
+| `camera_control.type` | string | No | Preset type: `simple` (custom) / `down_back` / `forward_up` / `right_turn_forward` / `left_turn_forward` |
+| `camera_control.config.horizontal` | number | No | Left/right translation [-10, 10]; only when `type=simple`, only one config field may be non-zero |
+| `camera_control.config.vertical` | number | No | Up/down translation [-10, 10] |
+| `camera_control.config.pan` | number | No | Pitch [-10, 10] |
+| `camera_control.config.tilt` | number | No | Yaw [-10, 10] |
+| `camera_control.config.roll` | number | No | Roll [-10, 10] |
+| `camera_control.config.zoom` | number | No | Focal length [-10, 10] |
+
+---
+
+## Notes
+
+- **Key security**: `INTEGRATIONS_API_KEY` must only be read server-side in Edge Functions; never expose it to the frontend.
+- **Error handling**: Always handle 429 (quota exceeded) and 402 (insufficient balance).
+- **Billing**: The submit task endpoint (`api-eLMlJj3KJD89`) has billing enabled — original price ¥100.80, discount price ¥84.00 (per 84 billing units). The query endpoint (`api-rLobzpqX85m9`) is free. Avoid re-submitting duplicate tasks to minimise unnecessary charges.
+- **Mutually exclusive parameters**: `image+image_tail`, `dynamic_masks/static_mask`, and `camera_control` cannot be used simultaneously.
+- **Base64 format**: Do not include the `data:image/xxx;base64,` prefix in Base64 image data; pass only the encoded string itself.
+- **Mask images**: The aspect ratio of a mask image must match the input `image`; otherwise the task will fail.
+- **Video expiry**: Generated video CDN links are automatically cleared after 30 days — download or transfer to Supabase Storage promptly.

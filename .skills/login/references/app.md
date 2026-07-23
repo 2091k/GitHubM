@@ -9,9 +9,13 @@
 - All admin backend features must have all pages created with no TODOs left
 
 **Supported Login Methods (Phase 1)**:
-- Username + Password (default, required)
-- Phone + OTP Verification Code (when user requests phone login)
+- Phone + OTP Verification Code (default, required)
+- Username + Password (when user explicitly requests username/password login)
 - Google SSO: **NOT supported in Phase 1** (requires `expo-auth-session` setup, planned for Phase 2)
+
+**Login method selection**:
+- **IMPORTANT**: When the user explicitly specifies a login method (e.g., phone-OTP, username-password), implement **ONLY** that method — do NOT add other methods alongside it.
+- No method specified → use phone + OTP (default)
 
 <AUTH_REQUIRED_ITEMS>
 **Required**:
@@ -55,12 +59,18 @@
    - Get session state from `supabase.auth.onAuthStateChange()` listener in a context provider
    - NEVER scatter auth redirect logic (`useEffect + router.replace`) across individual pages — converge all access control into the root layout
    - Public auth pages (`sign-in`, `sign-up`) live at root level; all post-login pages go under a protected `(app)/` group
+   - `app/index.tsx` is the unauthenticated landing page (inside `guard={!session}`). Do NOT replace it with `<Redirect>` to a protected route — the target is removed when not logged in, causing white screen. Design it as a welcome/onboarding screen that navigates to `/(auth)/sign-in` for login.
 4. When the app uses authentication, MUST provide a clearly accessible account management entry point from the main navigation (e.g. a "Profile"/"Me"/"Settings" tab in tab-based apps, or a user avatar/gear icon in the header for stack-based apps). This entry point MUST include at minimum: current user info display and a logout button. It MUST be reachable from any primary screen — placing logout only on transitional pages (like role-select or onboarding) does NOT satisfy this requirement.
 5. After successful login, use `router.replace('/')` (NOT `router.push`) so the auth screen is removed from back-stack
 6. If roles/admin needed:
    - Admin creation strategy depends on the login method:
 
-   **A. Username + Password login (default)**:
+   **A. Phone + OTP login (default)**:
+   - Do NOT auto-create admin accounts and do NOT generate any admin setup scripts — admin login requires a real phone number to receive OTP, which cannot be predetermined by the AI.
+   - Do NOT add a secondary username+password login entry to the login screen — keep the login UI as phone+OTP only.
+   - In the finish summary, instruct the user to register normally first, then promote to admin via Supabase Dashboard (see AUTH_FINISH_SUMMARY).
+
+   **B. Username + Password login (when user explicitly requests)**:
    - AI must create one example admin account with a randomly generated, strong password (16+ chars, mixed case + digits + symbols). Never use simple passwords unless the user explicitly specifies one. Output the credentials in the finish summary.
    - **TIMING: Execute the three steps below immediately after the auth migration runs — do NOT defer to the end of the task. Context compression may cause this step to be skipped if left until later.**
    - Account creation flow (three-step, fully automated via script):
@@ -81,11 +91,6 @@
      UPDATE public.profiles SET role = 'admin' WHERE email = '<username>@miaoda.com';
      ```
    - The script must be executed automatically as part of the setup; log the resulting credentials (username + password) to the console.
-
-   **B. Phone + OTP login**:
-   - Do NOT auto-create admin accounts and do NOT generate any admin setup scripts — admin login requires a real phone number to receive OTP, which cannot be predetermined by the AI.
-   - Do NOT add a secondary username+password login entry to the login screen — keep the login UI as phone+OTP only.
-   - In the finish summary, instruct the user to register normally first, then promote to admin via Supabase Dashboard (see AUTH_FINISH_SUMMARY).
 
    **Common rules for both methods**:
    - After login, check the user's role from profiles and conditionally show admin navigation entries (e.g. an "管理" tab or header icon). Do NOT create a separate admin login route — admin uses the same login screen as regular users, and the app routes by role after authentication.
@@ -122,13 +127,12 @@
      ```
 
 **Recommended**:
-1. If no method specified, use username + password
-2. Login must check `supabase_verification`; show phone verification UI if enabled
-3. If no verification is needed, auto-login after signup and navigate back
+1. Login must check `supabase_verification`; show phone verification UI if enabled
+2. If no verification is needed, auto-login after signup and navigate back
 </AUTH_REQUIRED_ITEMS>
 
 <AUTH_METHODS>
-**Username + Password** (default method):
+**Username + Password** (when user explicitly requests):
 - Simulate email/password with `@miaoda.com` suffix: `username@miaoda.com`
 - Use `supabase_verification` tool to disable email verification
 - Only letters, digits, and `_` are allowed in usernames
@@ -194,6 +198,10 @@ const { data, error } = await supabase.auth.verifyOtp({
 6. Prioritize `getSession()` for login status and provide global login state control
 7. Logout MUST be accessible from the main app interface (see Required item 4 above) — NOT hidden in transitional or one-time pages
 8. Login screen must be accessible even when not logged in (whitelist the auth route group)
+9. **signUp with role selection or approval flow MUST use an Edge Function**: Two cases require wrapping `signUp` in a Supabase Edge Function (service-role key) instead of calling it directly from the frontend:
+   - **Case A — role selected at registration**: When the user picks an identity/role during signup (e.g. buyer vs. seller, student vs. teacher), the Edge Function calls `supabaseAdmin.auth.admin.createUser(...)` and writes the chosen role to `profiles` atomically. NEVER call `supabase.auth.signUp()` on the frontend and then do a separate `profiles` update from client code.
+   - **Case B — post-registration approval**: When the account must go through a review/approval step before activation, the Edge Function creates the user and sets `status = 'pending'`. NEVER let the frontend call `signUp` and then write approval state directly.
+   - In both cases the frontend only calls the Edge Function and receives a session token back; no privileged writes happen client-side.
 </AUTH_CONSTRAINTS>
 
 <AUTH_TECH_LIMITS>
@@ -207,6 +215,10 @@ const { data, error } = await supabase.auth.verifyOtp({
 7. Only username in email field; no phone in email field
 8. Do not allow login with both email and username — use username with `@miaoda.com` simulation
 9. AI-registered or AI-created accounts must use randomly generated, strong passwords (16+ chars, mixed uppercase + lowercase + digits + symbols). Never use simple or guessable passwords unless the user explicitly specifies the password.
+10. **signUp with role selection or approval flow MUST use an Edge Function**: Two cases require wrapping `signUp` in a Supabase Edge Function (service-role key) instead of calling it directly from the frontend:
+    - **Case A — role selected at registration**: When the user picks an identity/role during signup (e.g. buyer vs. seller, student vs. teacher), the Edge Function calls `supabaseAdmin.auth.admin.createUser(...)` and writes the chosen role to `profiles` atomically. NEVER call `supabase.auth.signUp()` on the frontend and then do a separate `profiles` role update from client code.
+    - **Case B — post-registration approval**: When the account must go through a review/approval step before activation, the Edge Function creates the user and sets `status = 'pending'`. NEVER let the frontend call `signUp` and then write approval state directly.
+    - In both cases the frontend only calls the Edge Function and receives a session token back; no privileged writes happen client-side.
 </AUTH_TECH_LIMITS>
 
 <AUTH_FINISH_SUMMARY>

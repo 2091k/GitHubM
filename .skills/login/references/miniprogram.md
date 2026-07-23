@@ -165,6 +165,10 @@ Tech limits:
 8. Do not allow login with both email and username. Use username. Store email in the profile table.
 9. Taro H5/WeChat compatibility: WeChat login requires username-password fallback; non-WeChat methods don't need WeChat login.
 10. AI-registered or AI-created accounts must use randomly generated, strong passwords (16+ chars, mixed uppercase + lowercase + digits + symbols). Never use simple or guessable passwords unless the user explicitly specifies the password.
+11. **signUp with role selection or approval flow MUST use an Edge Function**: Two cases require wrapping `signUp` in a Supabase Edge Function (service-role key) instead of calling it directly from the frontend:
+    - **Case A — role selected at registration**: When the user picks an identity/role during signup (e.g. buyer vs. seller, student vs. teacher), the Edge Function calls `supabaseAdmin.auth.admin.createUser(...)` and writes the chosen role to `profiles` atomically. NEVER call `supabase.auth.signUp()` on the frontend and then do a separate `profiles` role update from client code.
+    - **Case B — post-registration approval**: When the account must go through a review/approval step before activation, the Edge Function creates the user and sets `status = 'pending'`. NEVER let the frontend call `signUp` and then write approval state directly.
+    - In both cases the frontend only calls the Edge Function and receives a session token back; no privileged writes happen client-side.
 
 Auth constraints:
 1. Never run concurrent auth operations; supabase-js internally uses global lock for serialization.
@@ -173,6 +177,7 @@ Auth constraints:
 4. Keep RLS policies fast; avoid complex queries that may hang.
 5. Combine auth.users + profiles for complete user information, use userId for profile queries.
 6. Prioritize getSession() for login status and provide global login state control.
+7. When signup involves role selection by the user or a post-registration approval step, ALWAYS encapsulate `signUp` + the role/status write in an Edge Function. The frontend must only call the Edge Function and refresh the session — NEVER split `signUp` (frontend) + `profiles` role update (frontend) into two separate client calls.
 
 Finish Summary Requirements (MANDATORY):
 The finish tool result MUST include these items (keep brief, one line each):
@@ -204,10 +209,10 @@ const { data, error } = await supabase.auth.verifyOtp({
      - If such a component exists in the codebase, do NOT import or call it from the login/register page. Build the OTP UI directly using only `supabase.auth.signInWithOtp()` and `supabase.auth.verifyOtp()`.
 3. Phone + password (verification ON): Use signUp(phone) to send OTP (Password required), verifyOtp() to register.
 4. Email + password (verification ON): pass emailRedirectTo to signup (default window.location.origin).
-5. Wechat login:
+5. Wechat login (WeChat authorization login, Wechat one-click authorization login):
   - Must add username-password login as a second login method.
   - Use signInWithWechat in `src/contexts/AuthContext.tsx` to implement WeChat login.
-  - Create an edge function named `wechat_miniapp_login` to support WeChat Mini Program login:
+  - **MANDATORY — WeChat login is non-functional without this step. Do NOT skip it.** Create an edge function named `wechat_miniapp_login`. The frontend `signInWithWechat` sends the `wx.login` code to this function, which exchanges it for an openid via code2session. The frontend compiles and renders green without this backend, so it is easy to overlook — but login will fail at runtime. Create it with exactly this code:
 ```
 import { createClient } from 'jsr:@supabase/supabase-js';
 
@@ -309,6 +314,7 @@ Deno.serve(async (req) => {
   }
 })
 ```
+  - **After creating the file, deploy it immediately** with the `supabase_deploy_edge_function` tool. Writing the file alone is not enough — an undeployed function returns 404 and login fails at runtime.
   - Modify handle_new_user() to also sync the username: add a `username` column to profiles, extract from `(NEW.raw_user_meta_data->>'username')::text`. Username-password signup must pass username in metadata via `signUp({ options: { data: { username } } })`. WeChat users will have username = NULL.
   - **CRITICAL**: username and openid must be stored in profiles.openid field. NEVER extract openid from email string — Supabase may normalize the email case.
   - **OPENID CONSTRAINT**: Do NOT add UNIQUE constraint on profiles.openid field. The same WeChat user may have multiple accounts.

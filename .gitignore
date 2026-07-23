@@ -50,3 +50,4 @@ historical_context.txt
 /.skills
 /tasks
 package.json.[0-9]*
+.native-wind-cache

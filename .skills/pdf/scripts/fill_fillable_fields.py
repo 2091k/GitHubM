@@ -1,11 +1,23 @@
 """Fills fillable form fields in a PDF. See forms.md."""
 
+import html
 import json
+import re
 import sys
 
 from pypdf import PdfReader, PdfWriter
 
 from extract_form_field_info import get_field_info
+
+_HTML_TAG_RE = re.compile(r'<[^>]+>|<<<[^>]*>>>|<<[^>]*>>')
+
+
+def strip_markup(text):
+    """Remove HTML/markup tags, decode HTML entities, and collapse whitespace."""
+    text = _HTML_TAG_RE.sub('', str(text))
+    text = html.unescape(text)       # &amp; → &, &nbsp; → space, etc.
+    text = re.sub(r'\s+', ' ', text) # collapse newlines/tabs/multiple spaces
+    return text.strip()
 
 
 def fill_pdf_fields(input_pdf_path: str, fields_json_path: str, output_pdf_path: str):
@@ -16,6 +28,7 @@ def fill_pdf_fields(input_pdf_path: str, fields_json_path: str, output_pdf_path:
     fields_by_page = {}
     for field in fields:
         if "value" in field:
+            field["value"] = strip_markup(field["value"])
             field_id = field["field_id"]
             page = field["page"]
             if page not in fields_by_page:
