@@ -413,7 +413,7 @@ export default function ToolWorkshopPanel({ refreshTrigger = 0, onProposalCount 
 
       {/* 过滤器 */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border shrink-0">
-        <Select value={filter} onValueChange={v => setFilter(v)}>
+        <Select value={filter} onValueChange={v => setFilter(v as 'all' | Proposal['status'])}>
           <SelectTrigger className="h-7 text-xs flex-1 min-w-0">
             <SelectValue />
           </SelectTrigger>
