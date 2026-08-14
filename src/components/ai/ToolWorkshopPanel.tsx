@@ -34,26 +34,18 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
+import {
+  fetchProposalsByStatus,
+  fetchProposalStats,
+  approveProposal,
+  rejectProposal,
+  applyProposal,
+  type Proposal as StoreProposal,
+} from './toolWorkshopStore';
 import i18n from "@/i18n";
 
-const SUPABASE_URL    = import.meta.env.VITE_SUPABASE_URL    as string;
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
-
 // ── 类型 ──────────────────────────────────────────────────────────────────
-export interface Proposal {
-  id: string;
-  tool_name: string;
-  issue: string;
-  severity: 'low' | 'medium' | 'high';
-  context: string | null;
-  code_before: string | null;
-  code_after: string | null;
-  explanation: string | null;
-  status: 'pending' | 'approved' | 'applied' | 'rejected';
-  submitted_by: string | null;
-  applied_at: string | null;
-  created_at: string;
-}
+export type Proposal = StoreProposal;
 
 interface Stats {
   total: number;
@@ -72,27 +64,7 @@ interface ToolWorkshopPanelProps {
 }
 
 // ── 工具函数 ─────────────────────────────────────────────────────────────
-async function callWorkshop(action: string, body?: Record<string, unknown>) {
-  const isGet = !body;
-  const url   = isGet
-    ? `${SUPABASE_URL}/functions/v1/tool-workshop?action=${action}`
-    : `${SUPABASE_URL}/functions/v1/tool-workshop`;
-
-  const res = await fetch(url, {
-    method: isGet ? 'GET' : 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'apikey': SUPABASE_ANON_KEY,
-      'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-    },
-    body: isGet ? undefined : JSON.stringify({ action, ...body }),
-  });
-  if (!res.ok) {
-    const e = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(e.error || res.statusText);
-  }
-  return res.json();
-}
+// 数据源：项目仓库 qq5855144/GitHubM 的 GitHub Issues（见 toolWorkshopStore.ts）
 
 function severityColor(s: string) {
   if (s === 'high')   return 'bg-destructive/15 text-destructive border-destructive/30';
@@ -295,8 +267,8 @@ function ApplyDialog({
   const handleApply = async () => {
     setLoading(true);
     try {
-      await callWorkshop('apply', { id: proposal.id });
-      toast.success(i18n.t('提案已标记为已应用，请部署更新的 Edge Function'));
+      await applyProposal(proposal.id);
+      toast.success(i18n.t('提案已标记为已应用'));
       onApplied(proposal.id);
       onClose();
     } catch (e) {
@@ -371,7 +343,7 @@ export default function ToolWorkshopPanel({ refreshTrigger = 0, onProposalCount 
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [stats, setStats]         = useState<Stats | null>(null);
   const [loading, setLoading]     = useState(false);
-  const [filter, setFilter]       = useState<string>('pending');
+  const [filter, setFilter]       = useState<'all' | Proposal['status']>('pending');
   const [applyTarget, setApplyTarget] = useState<Proposal | null>(null);
   const [applyOpen, setApplyOpen]     = useState(false);
 
@@ -379,12 +351,12 @@ export default function ToolWorkshopPanel({ refreshTrigger = 0, onProposalCount 
     if (!silent) setLoading(true);
     try {
       const [listRes, statsRes] = await Promise.all([
-        callWorkshop(`list&status=${filter}`),
-        callWorkshop('stats'),
+        fetchProposalsByStatus(filter === 'all' ? 'all' : filter),
+        fetchProposalStats(),
       ]);
-      setProposals(listRes.proposals ?? []);
-      setStats(statsRes.stats ?? null);
-      onProposalCount?.(statsRes.stats?.pending ?? 0);
+      setProposals(listRes ?? []);
+      setStats(statsRes ?? null);
+      onProposalCount?.(statsRes?.pending ?? 0);
     } catch (e) {
       if (!silent) toast.error(i18n.t('加载失败：') + (e as Error).message);
     } finally {
@@ -395,14 +367,14 @@ export default function ToolWorkshopPanel({ refreshTrigger = 0, onProposalCount 
   useEffect(() => { load(); }, [load, refreshTrigger]);
 
   const handleApprove = async (id: string) => {
-    await callWorkshop('approve', { id });
+    await approveProposal(id);
     toast.success(i18n.t('提案已审核通过'));
     setProposals(prev => prev.map(p => p.id === id ? { ...p, status: 'approved' } : p));
     load(true);
   };
 
   const handleReject = async (id: string) => {
-    await callWorkshop('reject', { id });
+    await rejectProposal(id);
     toast.success(i18n.t('提案已拒绝'));
     setProposals(prev => prev.map(p => p.id === id ? { ...p, status: 'rejected' } : p));
     load(true);
@@ -441,7 +413,7 @@ export default function ToolWorkshopPanel({ refreshTrigger = 0, onProposalCount 
 
       {/* 过滤器 */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border shrink-0">
-        <Select value={filter} onValueChange={v => setFilter(v)}>
+        <Select value={filter} onValueChange={v => setFilter(v as 'all' | Proposal['status'])}>
           <SelectTrigger className="h-7 text-xs flex-1 min-w-0">
             <SelectValue />
           </SelectTrigger>

@@ -1,19 +1,14 @@
-// AI 助手 Edge Function v3
-// 支持多模型：文心 ERNIE / DeepSeek / Gemini / Qwen / OpenAI / 自定义兼容接口
+// AI 助手核心引擎（浏览器端直连版，由 supabase/functions/ai-assistant 移植）
+// 支持多模型：DeepSeek / Gemini / Qwen / OpenAI / 自定义兼容接口（文心已移除）
 // ReAct Agent：AI 通过工具链读取/写入 GitHub 仓库文件
-// 新增：任务计划持久化到 Supabase + 步骤失败自动重试
-
-import { createClient } from "npm:@supabase/supabase-js@2";
-
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
+// 浏览器端直接调用各家 LLM API 与 GitHub API（均支持 CORS），无需任何后端。
+// 任务计划/快照持久化改为 localStorage，断点恢复同样可用。
+import type { StreamMetrics } from '@/components/ai/aiTypes';
 
 // ── 模型配置 ────────────────────────────────────────────────────────────────
 
 interface ModelConfig {
-  /** wenxin | deepseek | gemini | qwen | openai | custom */
+  /** deepseek | gemini | qwen | openai | custom */
   type: string;
   /** 用户自带 API Key（DeepSeek/Gemini/Qwen/OpenAI/Custom） */
   api_key?: string;
@@ -699,7 +694,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
 ];
 
-function buildLLMRequest(cfg: ModelConfig, platformKey: string): {
+function buildLLMRequest(cfg: ModelConfig): {
   url: string;
   headers: Record<string, string>;
   bodyExtra: Record<string, unknown>;
@@ -782,13 +777,10 @@ function buildLLMRequest(cfg: ModelConfig, platformKey: string): {
           ? { model: cfg.model, stream: true, max_tokens: 8192, ...tempExtra }
           : { stream: true, max_tokens: 8192, ...tempExtra },
       };
-    default: // wenxin（platform managed）
-      return {
-        url: "https://app-bo4w33bsdqm9-api-zYkZz8qovQ1L-gateway.appmiaoda.com/v2/chat/completions",
-        headers: { "X-Gateway-Authorization": `Bearer ${platformKey}` },
-        // 文心：enable_thinking=false + 不限制输出长度
-        bodyExtra: { enable_thinking: false, max_tokens: 8192, ...tempExtra },
-      };
+    default:
+      // 文心平台已移除（依赖后端平台密钥，无法前端直连）。
+      // 老配置已在 aiUtils.loadModelConfig 中自动迁移为 deepseek。
+      throw new Error(`不支持的模型平台：${cfg.type}（文心平台已下线，请在模型设置中选择 DeepSeek/Gemini/Qwen/OpenAI 并填写 API Key）`);
   }
 }
 
@@ -3854,9 +3846,9 @@ function inferTemperature(
 /**
  * 构建 system prompt。
  * - FC 模型（deepseek/openai/gemini/qwen）：精简版，工具通过 schema 传递，不再在文本里列举
- * - 非 FC 模型（wenxin/custom）：完整版，包含工具清单说明
+ * - 非 FC 模型（custom）：完整版，包含工具清单说明
  */
-function buildSystemPrompt(targetBranch?: string, isAutoMode = false, modelType = "wenxin", modelConfig?: { model?: string }): string {
+function buildSystemPrompt(targetBranch?: string, isAutoMode = false, modelType = "deepseek", modelConfig?: { model?: string }): string {
   const branchNote = targetBranch
     ? `**当前目标分支：\`${targetBranch}\`**（所有写入操作默认提交到此分支，除非用户明确指定其他分支）`
     : "（未指定分支，写入时使用仓库默认分支）";
@@ -3939,7 +3931,7 @@ get_workflow_runs → get_run_jobs → get_job_logs → 分析 → patch/write �
 - 错误时直接说明原因和建议`;
   }
 
-  // ── 非 FC 模型：完整版 prompt（文心 / custom） ─────────────────────────────
+  // ── 非 FC 模型：完整版 prompt（custom） ─────────────────────────────────
   // 直接回答查询类问题；单步骤操作直接执行；复杂任务先提方案等待确认
   if (!isAutoMode) {
     return `你是 GitHub 仓库开发助手，帮助用户管理仓库、查询信息、执行简单操作。
@@ -4581,13 +4573,12 @@ interface LLMUsage {
 
 async function callLLM(
   cfg: ModelConfig,
-  platformKey: string,
   messages: Message[],
   onThinkingChunk?: (chunk: string) => Promise<void>,
   onHeartbeat?: () => Promise<void>,
   onUsage?: (usage: LLMUsage) => void,
 ): Promise<LLMResult> {
-  const { url, headers, bodyExtra } = buildLLMRequest(cfg, platformKey);
+  const { url, headers, bodyExtra } = buildLLMRequest(cfg);
   console.log(`[callLLM] type=${cfg.type} model=${cfg.model || "default"} url=${url}`);
 
   // ── DeepSeek reasoning_content 一致性修复 ──────────────────────────────────
@@ -5172,70 +5163,139 @@ function executeTool(
 
 // ── Supabase 持久化辅助 ───────────────────────────────────────────────────────
 
-function makeSupabase() {
-  const url = Deno.env.get("SUPABASE_URL") ?? "";
-  const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-  if (!url || !key) return null;
-  return createClient(url, key);
+// ── 本地工作流持久化（localStorage，替代 Supabase）──────────────────────────
+// 工作流主表 key：ai_local_workflows；步骤表 key：ai_local_wf_steps_<workflowId>
+// 快照（messages/last_step_id）保存在主表行内，字段与 Edge Function 版一一对应。
+
+interface LocalWorkflowRow {
+  id: string;
+  user_id: string;
+  repo: string;
+  task_summary: string;
+  status: string;
+  total_steps: number;
+  done_steps: number;
+  fail_steps: number;
+  interrupted: boolean;
+  messages_snapshot?: unknown[] | null;
+  last_step_id?: string | null;
+  created_at: string;
+  finished_at?: string | null;
+}
+
+interface LocalWfStepRow {
+  workflow_id: string;
+  step_id: string;
+  seq: number;
+  title: string;
+  description: string;
+  status: string;
+  retry_count?: number;
+  started_at?: string | null;
+  finished_at?: string | null;
+}
+
+const WF_STORE_KEY = "ai_local_workflows";
+const WF_MAX_ROWS = 50;
+
+function readJson<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    return JSON.parse(raw) as T;
+  } catch { return fallback; }
+}
+
+function writeJson(key: string, value: unknown) {
+  try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* ignore */ }
+}
+
+function readWorkflows(): LocalWorkflowRow[] {
+  return readJson<LocalWorkflowRow[]>(WF_STORE_KEY, []);
+}
+
+function writeWorkflows(rows: LocalWorkflowRow[]) {
+  writeJson(WF_STORE_KEY, rows.slice(-WF_MAX_ROWS));
+}
+
+function readSteps(workflowId: string): LocalWfStepRow[] {
+  return readJson<LocalWfStepRow[]>(`ai_local_wf_steps_${workflowId}`, []);
+}
+
+function writeSteps(workflowId: string, rows: LocalWfStepRow[]) {
+  writeJson(`ai_local_wf_steps_${workflowId}`, rows);
+}
+
+/** 标记工作流为运行中（断点恢复时） */
+function dbMarkRunning(workflowId: string) {
+  try {
+    const rows = readWorkflows();
+    const row = rows.find(r => r.id === workflowId);
+    if (row) { row.status = "running"; row.interrupted = false; }
+    writeWorkflows(rows);
+  } catch (e) { console.error("[local-wf] markRunning exception", (e as Error).message); }
+}
+
+/** 标记工作流中断（可恢复） */
+function dbMarkInterrupted(workflowId: string) {
+  try {
+    const rows = readWorkflows();
+    const row = rows.find(r => r.id === workflowId);
+    if (row) { row.status = "running"; row.interrupted = true; }
+    writeWorkflows(rows);
+  } catch (e) { console.error("[local-wf] markInterrupted exception", (e as Error).message); }
 }
 
 /** 创建工作流记录，返回 workflow id */
 async function dbCreateWorkflow(
-  sb: ReturnType<typeof createClient>,
   userId: string,
   repo: string,
   taskSummary: string,
   steps: PlanStep[],
 ): Promise<string | null> {
   try {
-    const { data, error } = await sb
-      .from("task_workflows")
-      .insert({
-        user_id: userId,
-        repo,
-        task_summary: taskSummary.slice(0, 200),
-        status: "running",
-        total_steps: steps.length,
-        done_steps: 0,
-        fail_steps: 0,
-        interrupted: false,
-      })
-      .select("id")
-      .maybeSingle();
-    if (error || !data) { console.error("[db] createWorkflow error", error?.message); return null; }
+    const id = `wf_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+    const rows = readWorkflows();
+    rows.push({
+      id,
+      user_id: userId,
+      repo,
+      task_summary: taskSummary.slice(0, 200),
+      status: "running",
+      total_steps: steps.length,
+      done_steps: 0,
+      fail_steps: 0,
+      interrupted: false,
+      created_at: new Date().toISOString(),
+    });
+    writeWorkflows(rows);
 
     // 批量插入步骤
-    const stepRows = steps.map((s, i) => ({
-      workflow_id: (data as any).id,
+    writeSteps(id, steps.map((s, i) => ({
+      workflow_id: id,
       step_id: s.id,
       seq: i,
       title: s.title,
       description: s.desc,
       status: "pending",
-    }));
-    // @ts-ignore
-    const { error: sErr } = await sb.from("task_workflow_steps").insert(stepRows);
-    if (sErr) console.error("[db] insertSteps error", sErr.message);
+    })));
 
-    return (data as any).id as string;
-  } catch (e) { console.error("[db] createWorkflow exception", (e as Error).message); return null; }
+    return id;
+  } catch (e) { console.error("[local-wf] createWorkflow exception", (e as Error).message); return null; }
 }
 
 /** 更新步骤状态 */
 async function dbUpdateStep(
-  sb: ReturnType<typeof createClient>,
   workflowId: string,
   stepId: string,
   patch: { status?: string; retry_count?: number; started_at?: string; finished_at?: string },
 ) {
   try {
-    await sb
-      .from("task_workflow_steps")
-      // @ts-ignore
-      .update(patch)
-      .eq("workflow_id", workflowId)
-      .eq("step_id", stepId);
-  } catch (e) { console.error("[db] updateStep exception", (e as Error).message); }
+    const rows = readSteps(workflowId);
+    const row = rows.find(r => r.step_id === stepId);
+    if (row) Object.assign(row, patch);
+    writeSteps(workflowId, rows);
+  } catch (e) { console.error("[local-wf] updateStep exception", (e as Error).message); }
 }
 
 /**
@@ -5287,69 +5347,145 @@ function sanitizeToolCallMessages(msgs: Message[]): Message[] {
 
 /** 保存 messages 快照（用于批次中断后恢复） */
 async function dbSaveSnapshot(
-  sb: ReturnType<typeof createClient>,
   workflowId: string,
   messages: Message[],
   lastStepId: string | null,
   interrupted: boolean,
 ) {
   try {
-    // 保留最近 60 条消息，防止快照过大（jsonb 列最大 1GB，但实际控制合理大小）
+    // 保留最近 60 条消息，防止快照过大
     // ⚠️ 截断可能导致不完整的 tool_calls 对，保存前必须清理
     const snapshot = sanitizeToolCallMessages(messages.slice(-60));
-    await sb
-      .from("task_workflows")
-      .update({
-        messages_snapshot: snapshot,
-        last_step_id: lastStepId,
-        interrupted,
-      })
-      .eq("id", workflowId);
-  } catch (e) { console.error("[db] saveSnapshot exception", (e as Error).message); }
+    const rows = readWorkflows();
+    const row = rows.find(r => r.id === workflowId);
+    if (row) {
+      row.messages_snapshot = snapshot;
+      row.last_step_id = lastStepId;
+      row.interrupted = interrupted;
+      writeWorkflows(rows);
+    }
+  } catch (e) { console.error("[local-wf] saveSnapshot exception", (e as Error).message); }
 }
 
 /** 加载工作流快照（用于断点恢复） */
 async function dbLoadSnapshot(
-  sb: ReturnType<typeof createClient>,
   workflowId: string,
 ): Promise<{ messages: Message[]; lastStepId: string | null; taskSummary: string } | null> {
   try {
-    const { data, error } = await sb
-      .from("task_workflows")
-      .select("messages_snapshot, last_step_id, task_summary, interrupted")
-      .eq("id", workflowId)
-      .maybeSingle();
-    if (error || !data) return null;
+    const rows = readWorkflows();
+    const row = rows.find(r => r.id === workflowId);
+    if (!row) return null;
     // ⚠️ 加载后再次清理：旧快照可能包含不完整的 tool_calls 对
-    const rawMessages = ((data as any).messages_snapshot as Message[]) ?? [];
+    const rawMessages = (row.messages_snapshot ?? []) as Message[];
     return {
       messages: sanitizeToolCallMessages(rawMessages),
-      lastStepId: ((data as any).last_step_id as string) ?? null,
-      taskSummary: ((data as any).task_summary as string) ?? "",
+      lastStepId: row.last_step_id ?? null,
+      taskSummary: row.task_summary ?? "",
     };
-  } catch (e) { console.error("[db] loadSnapshot exception", (e as Error).message); return null; }
+  } catch (e) { console.error("[local-wf] loadSnapshot exception", (e as Error).message); return null; }
 }
 
 /** 完成工作流（统计成功/失败步骤数） */
 async function dbFinishWorkflow(
-  sb: ReturnType<typeof createClient>,
   workflowId: string,
 ) {
   try {
-    const { data: steps } = await sb
-      .from("task_workflow_steps")
-      .select("status")
-      .eq("workflow_id", workflowId);
-    if (!steps) return;
+    const steps = readSteps(workflowId);
     const done = steps.filter(s => s.status === "done").length;
     const fail = steps.filter(s => s.status === "error").length;
     const status = fail > 0 ? "partial_fail" : "done";
-    await sb
-      .from("task_workflows")
-      // @ts-ignore
-      .update({ status, done_steps: done, fail_steps: fail, finished_at: new Date().toISOString(), interrupted: false })
-      .eq("id", workflowId);
-  } catch (e) { console.error("[db] finishWorkflow exception", (e as Error).message); }
+    const rows = readWorkflows();
+    const row = rows.find(r => r.id === workflowId);
+    if (row) {
+      row.status = status;
+      row.done_steps = done;
+      row.fail_steps = fail;
+      row.finished_at = new Date().toISOString();
+      row.interrupted = false;
+      writeWorkflows(rows);
+    }
+  } catch (e) { console.error("[local-wf] finishWorkflow exception", (e as Error).message); }
+}
+
+// ── AI 工具问题上报本地存储（原 tool_improvement_proposals 表）─────────────────
+
+interface LocalAiToolProposalRow {
+  id: string;
+  tool_name: string;
+  issue: string;
+  severity: string;
+  context: string;
+  explanation?: string;
+  code_before?: string | null;
+  code_after?: string | null;
+  submitted_by: string;
+  status: string;
+  created_at: string;
+}
+
+const AI_PROPOSALS_KEY = "ai_local_tool_proposals";
+
+function readProposals(): LocalAiToolProposalRow[] {
+  return readJson<LocalAiToolProposalRow[]>(AI_PROPOSALS_KEY, []);
+}
+
+function writeProposals(rows: LocalAiToolProposalRow[]) {
+  writeJson(AI_PROPOSALS_KEY, rows.slice(-100));
+}
+
+/** AI 上报工具问题（report_tool_issue 虚拟工具） */
+function saveAiToolIssue(payload: {
+  tool_name: string;
+  issue: string;
+  severity: string;
+  context: string;
+  submitted_by: string;
+}): string | null {
+  try {
+    const id = `prop_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+    const rows = readProposals();
+    rows.push({ id, ...payload, status: "pending", created_at: new Date().toISOString() });
+    writeProposals(rows);
+    return id;
+  } catch (e) { console.error("[local] saveAiToolIssue error", (e as Error).message); return null; }
+}
+
+/** AI 提交工具改进方案（propose_tool_fix 虚拟工具） */
+function saveAiToolFix(payload: {
+  tool_name: string;
+  explanation: string;
+  code_before: string;
+  code_after: string;
+  context: string;
+  submitted_by: string;
+}): string | null {
+  try {
+    const rows = readProposals();
+    const existing = [...rows].reverse().find(r => r.tool_name === payload.tool_name && r.status === "pending");
+    if (existing) {
+      existing.explanation = payload.explanation;
+      existing.code_before = payload.code_before || null;
+      existing.code_after = payload.code_after || null;
+      writeProposals(rows);
+      return existing.id;
+    }
+    const id = `prop_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+    rows.push({
+      id,
+      tool_name: payload.tool_name,
+      issue: payload.explanation,
+      explanation: payload.explanation,
+      code_before: payload.code_before || null,
+      code_after: payload.code_after || null,
+      severity: "medium",
+      context: payload.context,
+      submitted_by: payload.submitted_by,
+      status: "pending",
+      created_at: new Date().toISOString(),
+    });
+    writeProposals(rows);
+    return id;
+  } catch (e) { console.error("[local] saveAiToolFix error", (e as Error).message); return null; }
 }
 
 // ── SSE 流输出 ───────────────────────────────────────────────────────────────
@@ -5367,13 +5503,14 @@ async function dbFinishWorkflow(
  *   ...payload                 // 事件专有字段
  * }
  */
-function createSSEStream(streamId: string, turnId: string) {
-  const { readable, writable } = new TransformStream();
-  const writer = writable.getWriter();
-  const encoder = new TextEncoder();
+/**
+ * 创建标准化事件流（浏览器端本地版）。
+ * 事件信封与 Edge Function 版完全一致：
+ * { stream_id, turn_id, seq, timestamp, type, ...payload }
+ * 唯一的区别：不再写入 ReadableStream，而是通过 onEvent 回调逐条交给 UI。
+ */
+function createSSEStream(streamId: string, turnId: string, onEvent: (data: string) => void) {
   let seq = 0;
-
-  const sendRaw = (data: string) => writer.write(encoder.encode(`data: ${data}\n\n`));
 
   /** 发送结构化事件（标准协议，含 seq/stream_id/turn_id/timestamp） */
   const sendTyped = (payload: Record<string, unknown>) => {
@@ -5384,26 +5521,26 @@ function createSSEStream(streamId: string, turnId: string) {
       timestamp: Date.now(),
       ...payload,
     };
-    return sendRaw(JSON.stringify(envelope));
+    try {
+      onEvent(JSON.stringify(envelope));
+    } catch (e) {
+      console.error("[aiAgentCore] onEvent 回调异常", (e as Error).message);
+    }
+    return Promise.resolve();
   };
 
   /** 发送纯内容 Chunk */
   const sendChunk = (content: string) =>
     sendTyped({ type: "content", content });
 
-  /** 正常完成：发送 done 事件后关闭流 */
-  const sendDone = async () => {
-    await sendTyped({ type: "done", total_seq: seq });
-    await writer.close();
-  };
+  /** 正常完成：发送 done 事件 */
+  const sendDone = () => sendTyped({ type: "done", total_seq: seq });
 
-  /** 错误完成：发送 error 事件后关闭流 */
-  const sendError = async (code: string, message: string) => {
-    try { await sendTyped({ type: "error", code, message }); } catch { /* ignore */ }
-    try { await writer.close(); } catch { /* ignore */ }
-  };
+  /** 错误完成：发送 error 事件 */
+  const sendError = (code: string, message: string) =>
+    sendTyped({ type: "error", code, message });
 
-  return { readable, sendTyped, sendChunk, sendDone, sendError };
+  return { sendTyped, sendChunk, sendDone, sendError };
 }
 
 /**
@@ -5651,17 +5788,45 @@ function normalizeResultProtocol(result: string, isError: boolean): string {
   }
 }
 
-// ────────────────────────────────────────────────────────────────────────────
+// ── 浏览器端 Agent 入口 ─────────────────────────────────────────────────────
 
-Deno.serve(async (req: Request): Promise<Response> => {
-  if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
-  if (req.method !== "POST") return new Response("Method Not Allowed", { status: 405, headers: corsHeaders });
+/** runAiAgent 的调用参数（requestBody 与 Edge Function 版完全一致） */
+export interface RunAgentOptions {
+  /** messages/github_token/owner/repo/target_branch/model_config/user_id/auto_mode/idempotency_key/resume_workflow_id */
+  requestBody: Record<string, unknown>;
+  /** 用户手动终止信号（Stop 按钮） */
+  signal?: AbortSignal;
+  /** 每个结构化事件（JSON 字符串，信封与 SSE v2 协议一致） */
+  onData: (data: string) => void;
+  /** Agent 正常结束（已发送 done 事件） */
+  onComplete: () => void;
+  /** Agent 前置校验失败等错误 */
+  onError: (error: Error) => void;
+  /** TTFT / 流指标回调（首个 content 事件与结束时触发） */
+  onMetrics?: (metrics: AgentMetrics) => void;
+  /** 兼容旧接口：本地执行无网络假死，不会被调用 */
+  onIdle?: () => void;
+  /** 兼容旧接口：本地执行无连接超时概念 */
+  timeoutMs?: number;
+  /** 兼容旧接口 */
+  idleTimeoutMs?: number;
+}
+
+/** 流指标（与 aiTypes.StreamMetrics 同构，保证页面 spread 类型安全） */
+export type AgentMetrics = Partial<StreamMetrics>;
+
+/** 浏览器端运行 AI Agent（替代 Edge Function ai-assistant） */
+export async function runAiAgent(options: RunAgentOptions): Promise<void> {
+  const { requestBody, signal, onData, onComplete, onError, onMetrics } = options;
+  const startedAt = Date.now();
+  let firstTokenAt: number | undefined;
+  let totalChars = 0;
 
   // 优化：单次请求生命周期内的只读工具缓存，避免重复拉取相同文件/API消耗时间和Token
   const requestCache = new Map<string, string>();
 
   let messages: Message[], githubToken: string, owner: string, repo: string;
-  let modelConfig: ModelConfig = { type: "wenxin" };
+  let modelConfig: ModelConfig = { type: "deepseek" };
   let targetBranch: string | undefined;
   let userId = "anonymous";
   let resumeWorkflowId: string | undefined; // 断点恢复：传入 workflow id
@@ -5669,16 +5834,16 @@ Deno.serve(async (req: Request): Promise<Response> => {
   let idempotencyKey: string | undefined; // 幂等键：防止重复执行写操作
 
   try {
-    const body = await req.json();
-    messages = body.messages;
-    githubToken = body.github_token;
-    owner = body.owner;
-    repo = body.repo;
-    targetBranch = body.target_branch || undefined;
-    if (body.model_config) modelConfig = body.model_config;
-    if (body.user_id) userId = body.user_id;
-    if (body.resume_workflow_id) resumeWorkflowId = body.resume_workflow_id;
-    if (body.idempotency_key) idempotencyKey = body.idempotency_key;
+    const body = requestBody;
+    messages = body.messages as Message[];
+    githubToken = String(body.github_token ?? "");
+    owner = String(body.owner ?? "");
+    repo = String(body.repo ?? "");
+    targetBranch = body.target_branch ? String(body.target_branch) : undefined;
+    if (body.model_config) modelConfig = body.model_config as ModelConfig;
+    if (body.user_id) userId = String(body.user_id);
+    if (body.resume_workflow_id) resumeWorkflowId = String(body.resume_workflow_id);
+    if (body.idempotency_key) idempotencyKey = String(body.idempotency_key);
     // 读取自主模式标志：断点恢复时强制保持自主模式（恢复的任务必然是复杂任务）
     isAutoMode = !!body.auto_mode || !!resumeWorkflowId;
     // ── 模型路由：temperature 自适应 ────────────────────────────────────────
@@ -5698,21 +5863,13 @@ Deno.serve(async (req: Request): Promise<Response> => {
     if (!messages?.length || !githubToken || !owner || !repo) {
       throw new Error("缺少必要参数：messages, github_token, owner, repo");
     }
-    // 非文心模型需要用户提供 API Key
-    if (modelConfig.type !== "wenxin" && !modelConfig.api_key) {
+    // 除 custom 外所有平台都需要用户提供 API Key（wenxin 平台已移除）
+    if (modelConfig.type !== "custom" && !modelConfig.api_key) {
       throw new Error(`使用 ${modelConfig.type} 模型需要提供 API Key`);
     }
   } catch (err) {
-    return new Response(JSON.stringify({ error: (err as Error).message }), {
-      status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
-  }
-
-  const platformKey = Deno.env.get("INTEGRATIONS_API_KEY") ?? "";
-  if (modelConfig.type === "wenxin" && !platformKey) {
-    return new Response(JSON.stringify({ error: "服务配置错误：缺少平台 API 密钥" }), {
-      status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    onError(err as Error);
+    return;
   }
 
   const ctx: GithubContext = { token: githubToken, owner, repo };
@@ -5721,23 +5878,37 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const streamId = `s_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
   const turnId = idempotencyKey ?? `t_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
 
-  const { readable, sendTyped, sendChunk, sendDone, sendError } = createSSEStream(streamId, turnId);
-
-  // 客户端中断信号：用户点"停止"时 req.signal 触发 abort
-  const abortSig = req.signal;
-
-  (async () => {
+  // 事件输出包装：统计 TTFT / 字符数后交给 UI
+  const emit = (data: string) => {
     try {
-    // Supabase 客户端（可能为 null，持久化失败不影响主流程）
-    const sb = makeSupabase();
+      const parsed = JSON.parse(data) as Record<string, unknown>;
+      if (parsed.type === "content" && typeof parsed.content === "string") {
+        if (!firstTokenAt) {
+          firstTokenAt = Date.now();
+          onMetrics?.({ ttft: firstTokenAt - startedAt, startedAt, streamId });
+        }
+        totalChars += parsed.content.length;
+      }
+    } catch { /* ignore */ }
+    onData(data);
+  };
+
+  const { sendTyped, sendChunk, sendDone, sendError } = createSSEStream(streamId, turnId, emit);
+
+  // 客户端中断信号：用户点"停止"时 signal 触发 abort
+  const abortSig = signal ?? new AbortController().signal;
+
+  try {
+    await (async () => {
+    try {
     // 工作流 DB id（首轮收到 plan 后写入）
     let workflowDbId: string | null = null;
 
     // ── 断点恢复：若传入 resume_workflow_id，加载历史 messages 快照 ──────────
     let isResuming = false;
     let resumedLastStepId: string | null = null;
-    if (resumeWorkflowId && sb) {
-      const snap = await dbLoadSnapshot(sb, resumeWorkflowId);
+    if (resumeWorkflowId) {
+      const snap = await dbLoadSnapshot(resumeWorkflowId);
       if (snap && snap.messages.length > 0) {
         // 用快照替换 messages（保留 system prompt）
         messages = snap.messages.filter(m => m.role !== "system");
@@ -5745,7 +5916,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
         workflowDbId = resumeWorkflowId;
         isResuming = true;
         // 标记工作流重新运行
-        await sb.from("task_workflows").update({ status: "running", interrupted: false }).eq("id", resumeWorkflowId);
+        dbMarkRunning(resumeWorkflowId);
         console.log(`[resume] workflow=${resumeWorkflowId} lastStep=${resumedLastStepId} msgs=${messages.length}`);
       }
     }
@@ -5844,8 +6015,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
       // ── 整体任务超时保护：超过 8 分钟自动中断，保存快照供断点恢复 ──────────
       if (isTaskTimedOut()) {
         console.warn(`[timeout] 任务超时（已运行 ${Math.round((Date.now() - taskStartTime) / 1000)}s），自动中断`);
-        if (sb && workflowDbId) {
-          await dbSaveSnapshot(sb, workflowDbId, fullMessages, currentStepId, true);
+        if (workflowDbId) {
+          await dbSaveSnapshot(workflowDbId, fullMessages, currentStepId, true);
         }
         await sendTyped({ type: "status_info", message: "⏱️ 任务执行超时（超过 8 分钟），已自动暂停。您可以在「任务历史」中点击「恢复执行」继续。" });
         await sendTyped({ type: "timeout", workflow_id: workflowDbId ?? undefined });
@@ -5875,7 +6046,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       };
 
       try {
-        const llmResult = await callLLM(modelConfig, platformKey, fullMessages, onThinkingChunk, heartbeat, onUsageCb);
+        const llmResult = await callLLM(modelConfig, fullMessages, onThinkingChunk, heartbeat, onUsageCb);
         assistantText = llmResult.text;
         // FC 模式下，结构化工具调用直接挂到本轮作用域；非 FC 则为 null（后续走 extractToolCall）
         fcToolCall = llmResult.toolCall;
@@ -5940,10 +6111,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
           planSent = true; // 标记：后续轮次不再重复提取
           await sendTyped({ type: "plan", steps: plan });
           // 持久化：创建工作流 + 步骤
-          if (sb) {
-            const firstMsg = messages[messages.length - 1]?.content ?? "";
-            workflowDbId = await dbCreateWorkflow(sb, userId, `${owner}/${repo}`, firstMsg, plan);
-          }
+          const firstMsg = messages[messages.length - 1]?.content ?? "";
+          workflowDbId = await dbCreateWorkflow(userId, `${owner}/${repo}`, firstMsg, plan);
         }
         // 从显示文本中移除 PLAN:{...} 块（宽松匹配，支持多行 JSON）
         assistantText = assistantText.replace(/\bPLAN\s*:\s*\{[\s\S]*?\}\s*/i, "").trim();
@@ -5955,16 +6124,16 @@ Deno.serve(async (req: Request): Promise<Response> => {
         // 结束上一个步骤
         if (currentStepId) {
           await sendTyped({ type: "step_end", stepId: currentStepId, status: "done" });
-          if (sb && workflowDbId) {
-            await dbUpdateStep(sb, workflowDbId, currentStepId, {
+          if (workflowDbId) {
+            await dbUpdateStep(workflowDbId, currentStepId, {
               status: "done", finished_at: new Date().toISOString(),
             });
           }
         }
         currentStepId = stepMarker;
         await sendTyped({ type: "step_start", stepId: currentStepId });
-        if (sb && workflowDbId) {
-          await dbUpdateStep(sb, workflowDbId, currentStepId, {
+        if (workflowDbId) {
+          await dbUpdateStep(workflowDbId, currentStepId, {
             status: "running", started_at: new Date().toISOString(),
           });
         }
@@ -6018,15 +6187,15 @@ Deno.serve(async (req: Request): Promise<Response> => {
         // ── 真正的最终回答：结束当前步骤 ────────────────────────────────────
         if (currentStepId) {
           await sendTyped({ type: "step_end", stepId: currentStepId, status: "done" });
-          if (sb && workflowDbId) {
-            await dbUpdateStep(sb, workflowDbId, currentStepId, {
+          if (workflowDbId) {
+            await dbUpdateStep(workflowDbId, currentStepId, {
               status: "done", finished_at: new Date().toISOString(),
             });
           }
           currentStepId = null;
         }
         // 持久化工作流完成
-        if (sb && workflowDbId) await dbFinishWorkflow(sb, workflowDbId);
+        if (workflowDbId) await dbFinishWorkflow(workflowDbId);
         // 去除 TASK_DONE 标记再展示给用户（用户不需要看到内部标记）
         const finalDisplayText = assistantText.replace(/\bTASK_DONE\b\s*/g, "").trim();
         // 逐词流式输出最终回答，模拟打字机效果
@@ -6116,16 +6285,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
         const context    = String(toolCall.context || `repo: ${owner}/${repo}`);
         let savedId: string | null = null;
 
-        if (sb) {
-          try {
-            const { data } = await sb.from("tool_improvement_proposals").insert({
-              tool_name: toolName, issue, severity, context,
-              submitted_by: `${modelConfig.type}@${owner}/${repo}`,
-              status: "pending",
-            }).select("id").maybeSingle();
-            savedId = data?.id ?? null;
-          } catch (e) { console.error("[report_tool_issue] db error", (e as Error).message); }
-        }
+        savedId = saveAiToolIssue({
+          tool_name: toolName, issue, severity, context,
+          submitted_by: `${modelConfig.type}@${owner}/${repo}`,
+        });
 
         // 通知前端刷新工具改进面板
         await sendTyped({ type: "tool_issue_reported", tool_name: toolName, severity, proposal_id: savedId });
@@ -6149,35 +6312,14 @@ Deno.serve(async (req: Request): Promise<Response> => {
         const codeAfter   = String(toolCall.code_after || "");
         let savedId: string | null = null;
 
-        if (sb) {
-          try {
-            // 尝试更新同一工具最近一条 pending 提案；若无则新建
-            const { data: existing } = await sb
-              .from("tool_improvement_proposals")
-              .select("id")
-              .eq("tool_name", toolName)
-              .eq("status", "pending")
-              .order("created_at", { ascending: false })
-              .limit(1)
-              .maybeSingle();
-
-            if (existing?.id) {
-              await sb.from("tool_improvement_proposals").update({
-                explanation, code_before: codeBefore || null, code_after: codeAfter || null,
-              }).eq("id", existing.id);
-              savedId = existing.id;
-            } else {
-              const { data } = await sb.from("tool_improvement_proposals").insert({
-                tool_name: toolName, issue: explanation, explanation,
-                code_before: codeBefore || null, code_after: codeAfter || null,
-                severity: "medium", context: `repo: ${owner}/${repo}`,
-                submitted_by: `${modelConfig.type}@${owner}/${repo}`,
-                status: "pending",
-              }).select("id").maybeSingle();
-              savedId = data?.id ?? null;
-            }
-          } catch (e) { console.error("[propose_tool_fix] db error", (e as Error).message); }
-        }
+        savedId = saveAiToolFix({
+          tool_name: toolName,
+          explanation,
+          code_before: codeBefore,
+          code_after: codeAfter,
+          context: `repo: ${owner}/${repo}`,
+          submitted_by: `${modelConfig.type}@${owner}/${repo}`,
+        });
 
         await sendTyped({ type: "tool_fix_proposed", tool_name: toolName, proposal_id: savedId });
 
@@ -6326,8 +6468,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
         stepFailCount.set(failKey, prevFails);
 
         // 持久化重试次数
-        if (sb && workflowDbId) {
-          await dbUpdateStep(sb, workflowDbId, currentStepId, { retry_count: prevFails });
+        if (workflowDbId) {
+          await dbUpdateStep(workflowDbId, currentStepId, { retry_count: prevFails });
         }
         await sendTyped({ type: "step_retry", stepId: currentStepId, retryCount: prevFails });
 
@@ -6359,11 +6501,11 @@ Deno.serve(async (req: Request): Promise<Response> => {
         // ── 超出重试限制：终止当前步骤，生成修复清单 ────────────────────────
         console.warn(`[smart-retry] step=${failKey} 已达失败上限 ${MAX_SMART_RETRIES}，终止`);
         await sendTyped({ type: "step_end", stepId: currentStepId, status: "error" });
-        if (sb && workflowDbId) {
-          await dbUpdateStep(sb, workflowDbId, currentStepId, {
+        if (workflowDbId) {
+          await dbUpdateStep(workflowDbId, currentStepId, {
             status: "error", finished_at: new Date().toISOString(),
           });
-          await dbFinishWorkflow(sb, workflowDbId);
+          await dbFinishWorkflow(workflowDbId);
         }
         currentStepId = null;
         // 注入修复清单生成指令
@@ -6386,7 +6528,6 @@ Deno.serve(async (req: Request): Promise<Response> => {
         try {
           const repairResult = await callLLM(
             { ...modelConfig, temperature: 0.3 }, // 修复清单用低温度，确保输出聚焦
-            platformKey,
             fullMessages,
           );
           await streamAnswer(repairResult.text, sendChunk, 10, () => abortSig.aborted);
@@ -6454,8 +6595,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
       }
 
       // ── 每 5 轮自动保存快照：页面意外关闭时任务进度不丢失 ─────────────────
-      if (sb && workflowDbId && totalRound > 0 && totalRound % 5 === 0) {
-        await dbSaveSnapshot(sb, workflowDbId, fullMessages, currentStepId, false);
+      if (workflowDbId && totalRound > 0 && totalRound % 5 === 0) {
+        await dbSaveSnapshot(workflowDbId, fullMessages, currentStepId, false);
         console.log(`[auto-snapshot] totalRound=${totalRound} workflowId=${workflowDbId} 自动保存快照`);
       }
 
@@ -6467,8 +6608,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
           console.log(`[auto-continue] batch=${batch} totalRound=${totalRound} 自动续跑`);
           await sendTyped({ type: "status_info", message: `第 ${batch + 1} 批任务完成，继续执行剩余步骤…` });
           // 保存 messages 快照（批次续跑时持久化，供中断后恢复）
-          if (sb && workflowDbId) {
-            await dbSaveSnapshot(sb, workflowDbId, fullMessages, currentStepId, false);
+          if (workflowDbId) {
+            await dbSaveSnapshot(workflowDbId, fullMessages, currentStepId, false);
           }
           // 注入系统提示：告知 AI 继续剩余步骤，不要重新规划
           fullMessages.push({
@@ -6481,18 +6622,16 @@ Deno.serve(async (req: Request): Promise<Response> => {
           // 所有批次已耗尽：保存快照并标记为 interrupted，供用户手动恢复
           if (currentStepId) {
             await sendTyped({ type: "step_end", stepId: currentStepId, status: "done" });
-            if (sb && workflowDbId) {
-              await dbUpdateStep(sb, workflowDbId, currentStepId, {
+            if (workflowDbId) {
+              await dbUpdateStep(workflowDbId, currentStepId, {
                 status: "done", finished_at: new Date().toISOString(),
               });
             }
           }
           // 保存快照 + 标记中断（可恢复）
-          if (sb && workflowDbId) {
-            await dbSaveSnapshot(sb, workflowDbId, fullMessages, currentStepId, true);
-            await sb.from("task_workflows")
-              .update({ status: "running", interrupted: true })
-              .eq("id", workflowDbId);
+          if (workflowDbId) {
+            await dbSaveSnapshot(workflowDbId, fullMessages, currentStepId, true);
+            dbMarkInterrupted(workflowDbId);
           }
           await streamAnswer(
             `⚠️ 已达到最大工具调用轮次（${totalRound + 1} 轮），任务可能未完全完成。\n` +
@@ -6508,15 +6647,13 @@ Deno.serve(async (req: Request): Promise<Response> => {
     } // end outer for (batch)
 
     // 用户主动中断：保存快照，标记为可恢复
-    if (abortSig.aborted && sb && workflowDbId) {
-      await dbSaveSnapshot(sb, workflowDbId, fullMessages, currentStepId, true);
-      await sb.from("task_workflows")
-        .update({ status: "running", interrupted: true })
-        .eq("id", workflowDbId);
+    if (abortSig.aborted && workflowDbId) {
+      await dbSaveSnapshot(workflowDbId, fullMessages, currentStepId, true);
+      dbMarkInterrupted(workflowDbId);
     }
 
     // 非用户中断时才标记完成（abort 时已在上方标记为 interrupted）
-    if (!abortSig.aborted && sb && workflowDbId) await dbFinishWorkflow(sb, workflowDbId);
+    if (!abortSig.aborted && workflowDbId) await dbFinishWorkflow(workflowDbId);
     clearInterval(heartbeatTimer);
     await sendDone();
     } catch (fatalErr) {
@@ -6529,12 +6666,22 @@ Deno.serve(async (req: Request): Promise<Response> => {
     }
   })();
 
-  return new Response(readable, {
-    headers: {
-      ...corsHeaders,
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      "Connection": "keep-alive",
-    },
-  });
-});
+    // ── 上报结束指标并通知 UI 收尾 ──────────────────────────────────────────
+    const finishedAt = Date.now();
+    const durationSec = (finishedAt - startedAt) / 1000;
+    onMetrics?.({
+      startedAt,
+      firstTokenAt,
+      finishedAt,
+      ttft: firstTokenAt ? firstTokenAt - startedAt : undefined,
+      throughput: durationSec > 0 ? Math.round(totalChars / durationSec) : undefined,
+      streamId,
+      interruptReason: abortSig.aborted ? "user_stop" : "completed",
+    });
+    onComplete();
+  } catch (fatalErr) {
+    // runAiAgent 顶层兜底：IIFE 内部已吞掉 Agent 异常，此处主要防回调异常
+    console.error("[runAiAgent fatal]", (fatalErr as Error).message);
+    try { onError(fatalErr as Error); } catch { /* ignore */ }
+  }
+}

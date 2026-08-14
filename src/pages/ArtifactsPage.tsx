@@ -48,7 +48,6 @@ import {
   type GitHubArtifact,
   type GitHubReleaseAsset,
 } from '@/services/github';
-import { supabase } from '@/db/supabase';
 import { toast } from 'sonner';
 import i18n from "@/i18n";
 
@@ -252,11 +251,12 @@ function ReleaseItem({
 
 /** Actions Artifact 下载按钮
  *
- * archive_download_url 必须携带 Authorization 才能拿到 GitHub 302 重定向的临时预签名 URL。
- * 浏览器无法在 window.open 中携带 Authorization，直接打开会得到 401。
+ * archive_download_url 必须携带 Authorization 才能访问，GitHub 会 302 重定向到
+ * 带 SAS 签名的预签名 URL（签名内嵌，重定向后无需 Authorization）。
  *
- * 方案：通过 Edge Function（服务端）携带 token 获取 302 Location（预签名 URL），
- *       返回给前端后再用 window.open 打开——预签名 URL 不需要 Authorization。
+ * Android WebView：原生层直接携带 token 下载。
+ * 浏览器：fetch 携带 token 跟随 302 到预签名 URL，读取 blob 后触发下载
+ *         （已脱离 Supabase Edge Function get-artifact-url）。
  */
 function ArtifactDownloadButton({ art, owner, repo }: { art: GitHubArtifact; owner: string; repo: string }) {
   const [downloading, setDownloading] = useState(false);
@@ -280,30 +280,37 @@ function ArtifactDownloadButton({ art, owner, repo }: { art: GitHubArtifact; own
         return;
       }
 
-      // 浏览器：通过 Edge Function 服务端获取预签名 URL，再 window.open 打开
-      const { data, error } = await supabase.functions.invoke<{ url?: string; error?: string }>(
-        'get-artifact-url',
-        { body: { owner, repo, artifact_id: art.id, token } },
-      );
+      // 浏览器：前端直连 GitHub API（携带 token 跟随 302 到预签名 URL）
+      const res = await fetch(art.archive_download_url, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github+json',
+        },
+      });
 
-      if (error) {
-        const msg = await (error as { context?: { text?: () => Promise<string> } }).context?.text?.() ?? error.message;
-        toast.error(`下载失败：${msg}`);
-        return;
-      }
-      if (data?.error) {
-        toast.error(`下载失败：${data.error}`);
-        return;
-      }
-      if (!data?.url) {
-        toast.error(i18n.t('获取下载链接失败，请稍后重试'));
+      if (!res.ok) {
+        let msg = '';
+        try { msg = (await res.text()).slice(0, 200); } catch { /* ignore */ }
+        toast.error(`下载失败：HTTP ${res.status}${msg ? ` ${msg}` : ''}`);
         return;
       }
 
-      window.open(data.url, '_blank', 'noopener,noreferrer');
-      toast.success(`已打开 ${art.name}.zip 的下载链接`);
+      // 读取 blob 并触发浏览器下载
+      const blob = await res.blob();
+      const objUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = objUrl;
+      a.download = `${art.name}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(objUrl), 10_000);
+      toast.success(`开始下载 ${art.name}.zip`);
     } catch (err) {
-      toast.error(`下载失败：${err instanceof Error ? err.message : i18n.t('未知错误')}`);
+      const msg = err instanceof Error && err.message.includes('CORS')
+        ? i18n.t('跨域下载被拦截，请检查网络后重试')
+        : err instanceof Error ? err.message : i18n.t('未知错误');
+      toast.error(`下载失败：${msg}`);
     } finally {
       setDownloading(false);
     }

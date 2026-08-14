@@ -38,18 +38,6 @@ export interface ModelDef {
 
 export const MODEL_DEFS: ModelDef[] = [
   {
-    type: 'wenxin',
-    label: i18n.t('文心 ERNIE 4.5'),
-    desc: i18n.t('百度文心大模型，平台内置免费使用'),
-    badge: i18n.t('免费'),
-    needKey: false,
-    needEndpoint: false,
-    avatarText: i18n.t('文'),
-    avatarFrom: '#e85d04',
-    avatarTo: '#f48c06',
-    Icon: WenxinIcon,
-  },
-  {
     type: 'gemini',
     label: 'Google Gemini',
     desc: i18n.t('谷歌 Gemini 系列，上下文窗口超大'),
@@ -190,9 +178,17 @@ export function getModelDef(type: ModelType): ModelDef {
 export function loadModelConfig(): ModelConfig {
   try {
     const raw = localStorage.getItem(MODEL_CONFIG_KEY);
-    if (raw) return JSON.parse(raw) as ModelConfig;
+    if (raw) {
+      const cfg = JSON.parse(raw) as ModelConfig;
+      // 旧版本「文心」平台内置免费通道已随后端移除：
+      // 自动迁移到 DeepSeek（需用户自填 API Key），兼容老用户配置
+      if (cfg && cfg.type === 'wenxin') {
+        return { type: 'deepseek' };
+      }
+      return cfg;
+    }
   } catch { /* ignore */ }
-  return { type: 'wenxin' };
+  return { type: 'deepseek' };
 }
 
 export function saveModelConfig(cfg: ModelConfig): void {

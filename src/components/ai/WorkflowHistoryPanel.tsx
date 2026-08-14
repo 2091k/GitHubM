@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { supabase } from '@/db/supabase';
+import { listWorkflows, listWorkflowSteps, deleteWorkflow } from './workflowStore';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -133,12 +133,8 @@ function StepDetailDialog({
   useEffect(() => {
     if (!workflow || !open) return;
     setLoading(true);
-    supabase
-      .from('task_workflow_steps')
-      .select('*')
-      .eq('workflow_id', workflow.id)
-      .order('seq', { ascending: true })
-      .then(({ data }) => {
+    listWorkflowSteps(workflow.id)
+      .then((data) => {
         setSteps((data as StepRow[]) ?? []);
         setLoading(false);
       });
@@ -220,12 +216,7 @@ export default function WorkflowHistoryPanel({ userId, onResume, refreshTrigger,
   const load = useCallback(async () => {
     if (!userId) return;
     setLoading(true);
-    const { data } = await supabase
-      .from('task_workflows')
-      .select('*')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false })
-      .limit(100);
+    const data = await listWorkflows(userId);
     const rows = (data as WorkflowRow[]) ?? [];
     setWorkflows(rows);
     setLoading(false);
@@ -245,7 +236,7 @@ export default function WorkflowHistoryPanel({ userId, onResume, refreshTrigger,
   }, [refreshTrigger]);
 
   const handleDelete = async (id: string) => {
-    await supabase.from('task_workflows').delete().eq('id', id);
+    await deleteWorkflow(id);
     setWorkflows(prev => prev.filter(w => w.id !== id));
   };
 

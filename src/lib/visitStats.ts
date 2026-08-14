@@ -1,77 +1,62 @@
-// 访问统计工具模块（联网版）
-// 通过 Supabase Edge Function 上报访问日志，统计真实 PV/UV
-// IP 在服务端做 SHA-256 哈希，不暴露明文，保护用户隐私
+// 访问统计工具模块（纯本地版，已脱离 Supabase 后端）
+// 访问记录保存在本机 localStorage，统计本机 PV/UV（UV 以安装实例计）
+// 不再上报任何服务器，用户隐私完全本地化
 
-import { supabase } from '@/db/supabase';
-import i18n from "@/i18n";
-
-const SESSION_KEY = 'visit_session_id'; // 会话 ID（本次打开浏览器期间唯一）
+const STORE_KEY = 'visit_stats_local'; // 本地统计存储键
 const LAST_VISIT_KEY = 'visit_last_path'; // 上一次记录的路径（用于去重节流）
 const VISIT_DEBOUNCE_MS = 2000; // 同一页面最小记录间隔 2 秒（防止高频触发）
 
-// ── 会话 ID（每次刷新页面不变，关闭后重置）────────────────────────────────
-function getOrCreateSessionId(): string {
-  try {
-    let sid = sessionStorage.getItem(SESSION_KEY);
-    if (!sid) {
-      sid = `s_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-      sessionStorage.setItem(SESSION_KEY, sid);
-    }
-    return sid;
-  } catch {
-    return `s_${Math.random().toString(36).slice(2)}`;
-  }
+// ── 本地存储结构 ─────────────────────────────────────────────────────────
+interface VisitDayRecord {
+  pv: number;        // 当日总访问次数
+  paths: Record<string, number>; // 各页面访问次数
 }
 
-// ── 内部上报逻辑（带重试）──────────────────────────────────────────────────
-async function doRecordVisit(path: string, referrer: string | null): Promise<void> {
-  const sessionId = getOrCreateSessionId();
-
-  // 第一次尝试
-  try {
-    await supabase.functions.invoke('visit-tracker', {
-      method: 'POST',
-      body: { page_path: path, session_id: sessionId, referrer },
-    });
-    return;
-  } catch (e) {
-    console.warn(i18n.t('[visitStats] 第一次上报失败，准备重试:'), e);
-  }
-
-  // 重试一次（短暂延迟后）
-  await new Promise(r => setTimeout(r, 500));
-  try {
-    await supabase.functions.invoke('visit-tracker', {
-      method: 'POST',
-      body: { page_path: path, session_id: sessionId, referrer },
-    });
-    return;
-  } catch (e) {
-    console.warn(i18n.t('[visitStats] 重试后仍失败:'), e);
-  }
-
-  // 兜底：使用 sendBeacon（页面卸载时也能发，可靠性更高）
-  try {
-    const url = `${(import.meta.env.VITE_SUPABASE_URL ?? '').replace(/\/$/, '')}/functions/v1/visit-tracker`;
-    if (typeof navigator !== 'undefined' && navigator.sendBeacon) {
-      const blob = new Blob(
-        [JSON.stringify({ page_path: path, session_id: sessionId, referrer })],
-        { type: 'application/json' }
-      );
-      const ok = navigator.sendBeacon(url, blob);
-      if (ok) return;
-    }
-  } catch {
-    // sendBeacon 失败则彻底放弃
-  }
-
-  throw new Error(i18n.t('访问统计上报最终失败'));
+interface VisitStore {
+  /** 本机唯一实例 ID（作为 UV 标识） */
+  deviceId: string;
+  /** date(YYYY-MM-DD) -> 当日记录 */
+  days: Record<string, VisitDayRecord>;
 }
 
-// ── 记录一次页面访问（上报到 Edge Function）────────────────────────────────
+function loadStore(): VisitStore {
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<VisitStore>;
+      if (parsed && typeof parsed === 'object') {
+        return {
+          deviceId: typeof parsed.deviceId === 'string' ? parsed.deviceId : genDeviceId(),
+          days: parsed.days && typeof parsed.days === 'object' ? parsed.days : {},
+        };
+      }
+    }
+  } catch { /* ignore */ }
+  return { deviceId: genDeviceId(), days: {} };
+}
+
+function genDeviceId(): string {
+  const id = `d_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+  return id;
+}
+
+function saveStore(store: VisitStore): void {
+  try {
+    localStorage.setItem(STORE_KEY, JSON.stringify(store));
+  } catch { /* 存储空间不足时静默失败 */ }
+}
+
+function todayKey(): string {
+  const d = new Date();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+
+// ── 记录一次页面访问（写入本地存储）──────────────────────────────────────
 export async function recordVisit(pagePath?: string): Promise<void> {
   try {
-    const path = pagePath ?? (typeof location !== 'undefined' ? location.hash.replace(/^#/, '') || '/' : '/');
+    const path = pagePath ?? (typeof location !== 'undefined' ? location.pathname || '/' : '/');
 
     // 节流：同一页面 2 秒内重复触发则跳过（避免路由快速切换、刷新时重复记录）
     try {
@@ -87,15 +72,20 @@ export async function recordVisit(pagePath?: string): Promise<void> {
       // sessionStorage 不可用时忽略节流
     }
 
-    const referrer = typeof document !== 'undefined' ? document.referrer || null : null;
-    await doRecordVisit(path, referrer);
+    const store = loadStore();
+    const key = todayKey();
+    const day = store.days[key] ?? { pv: 0, paths: {} };
+    day.pv += 1;
+    day.paths[path] = (day.paths[path] ?? 0) + 1;
+    store.days[key] = day;
+    saveStore(store);
   } catch (e) {
-    // 最终仍失败时仅 console.warn，不阻断业务
-    console.warn(i18n.t('[visitStats] recordVisit 最终失败:'), e);
+    // 任何失败都仅 console.warn，不阻断业务
+    console.warn('[visitStats] recordVisit 失败:', e);
   }
 }
 
-// ── 类型定义（供 SettingsPage 使用）──────────────────────────────────────────
+// ── 类型定义（供 SettingsPage 使用）──────────────────────────────────────
 export interface DailyStats {
   date:  string;   // YYYY-MM-DD
   label: string;   // M/D 格式
@@ -107,7 +97,7 @@ export interface VisitSummary {
   todayPv:    number;  // 今日 PV
   todayUv:    number;  // 今日 UV
   totalPv:    number;  // 近 N 天总 PV
-  totalUv:    number;  // 近 N 天总 UV（按 IP 哈希去重）
+  totalUv:    number;  // 近 N 天总 UV（本机实例去重，即 1）
   allTimePv:  number;  // 历史累计总 PV
   allTimeUv:  number;  // 历史累计总 UV
   activeDays: number;  // 有访问的天数
@@ -118,23 +108,47 @@ export interface VisitStatsResult {
   summary: VisitSummary;
 }
 
-// ── 查询近 N 天统计数据（从 Edge Function 拉取）──────────────────────────────
+// ── 查询近 N 天统计数据（从本地存储读取）────────────────────────────────
 export async function fetchVisitStats(days = 7): Promise<VisitStatsResult> {
-  const { data, error } = await supabase.functions.invoke<VisitStatsResult>(
-    `visit-tracker?action=stats&days=${days}`,
-    { method: 'GET' }
-  );
+  const store = loadStore();
+  const trend: DailyStats[] = [];
+  let totalPv = 0;
+  let activeDays = 0;
+  let allTimePv = 0;
 
-  if (error) {
-    const msg = await error?.context?.text().catch(() => error?.message ?? i18n.t('未知错误'));
-    console.error(i18n.t('[visitStats] fetchVisitStats 失败:'), msg);
-    throw new Error(msg ?? i18n.t('获取访问统计失败'));
+  // 全量统计 allTime
+  for (const day of Object.values(store.days)) {
+    allTimePv += day.pv;
+    if (day.pv > 0) activeDays += 1;
   }
 
-  if (!data) {
-    console.error(i18n.t('[visitStats] fetchVisitStats 返回空数据'));
-    throw new Error(i18n.t('获取访问统计返回空数据'));
+  // 生成近 N 天趋势（含无访问的空白天，保证图表连续）
+  const today = new Date();
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() - i);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const pv = store.days[key]?.pv ?? 0;
+    if (pv > 0) totalPv += pv;
+    trend.push({
+      date: key,
+      label: `${d.getMonth() + 1}/${d.getDate()}`,
+      pv,
+      uv: pv > 0 ? 1 : 0,
+    });
   }
 
-  return data;
+  const todayPv = store.days[todayKey()]?.pv ?? 0;
+
+  return {
+    trend,
+    summary: {
+      todayPv,
+      todayUv: todayPv > 0 ? 1 : 0,
+      totalPv,
+      totalUv: totalPv > 0 ? 1 : 0,
+      allTimePv,
+      allTimeUv: allTimePv > 0 ? 1 : 0,
+      activeDays,
+    },
+  };
 }
