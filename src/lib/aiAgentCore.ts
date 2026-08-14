@@ -795,15 +795,13 @@ interface GithubContext {
 async function githubRequest(ctx: GithubContext, apiPath: string, options: RequestInit = {}) {
   const isWrite = options.method && options.method !== "GET";
   // GET 请求：在 URL 追加 _t=时间戳，彻底绕过 GitHub CDN 60s 强制缓存
-  // 同时设置 no-cache 头双重保障；写请求不做处理，避免干扰
+  // 注意：浏览器直连环境下不能设置 Cache-Control/Pragma 请求头——
+  // 它们会触发 CORS 预检，而 api.github.com 的预检响应不许可这两个头，
+  // 导致所有工具请求被浏览器拦截（Failed to fetch）。时间戳参数已足够。
   let finalPath = apiPath;
   if (!isWrite) {
     finalPath += apiPath.includes("?") ? `&_t=${Date.now()}` : `?_t=${Date.now()}`;
   }
-  const cacheHeaders: Record<string, string> = isWrite ? {} : {
-    "Cache-Control": "no-cache, no-store",
-    "Pragma": "no-cache",
-  };
   const res = await fetch(`https://api.github.com${finalPath}`, {
     ...options,
     headers: {
@@ -811,7 +809,6 @@ async function githubRequest(ctx: GithubContext, apiPath: string, options: Reque
       Accept: "application/vnd.github+json",
       "X-GitHub-Api-Version": "2022-11-28",
       "Content-Type": "application/json",
-      ...cacheHeaders,
       ...((options.headers as Record<string, string>) || {}),
     },
   });
@@ -997,12 +994,14 @@ function diagnose4xx(err: unknown, context?: string): string {
 
 async function listFiles(ctx: GithubContext, path: string): Promise<string> {
   try {
-    const data = await githubRequest(ctx, `/repos/${ctx.owner}/${ctx.repo}/contents/${path}`);
+    // 规范化：去首尾斜杠，避免 path="/" 时产生 /contents// 双斜杠 URL
+    const cleanPath = (path ?? "").replace(/^\/+|\/+$/g, "");
+    const data = await githubRequest(ctx, `/repos/${ctx.owner}/${ctx.repo}/contents/${cleanPath}`);
     if (Array.isArray(data)) {
       const items = data.map((f: { name: string; type: string; size: number }) =>
         `${f.type === "dir" ? "📁" : "📄"} ${f.name}${f.type === "file" ? ` (${f.size}B)` : ""}`
       );
-      return `目录 "${path || "/"}" 内容：\n${items.join("\n")}`;
+      return `目录 "${cleanPath || "/"}" 内容：\n${items.join("\n")}`;
     }
     return JSON.stringify(data);
   } catch (e) { return diagnose4xx(e, "list_files"); }
