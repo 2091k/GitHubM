@@ -259,7 +259,7 @@ export const CodeEditor = forwardRef<CodeEditorRef, CodeEditorProps>(
       if (onMount) onMount();
     }, [onMount]);
 
-    const throttleTimer = useRef<NodeJS.Timeout | null>(null);
+    const throttleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const lastCursorRef = useRef<string>('');
 
     useEffect(() => {
