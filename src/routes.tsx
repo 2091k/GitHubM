@@ -34,6 +34,7 @@ import RepoForksPage from './pages/RepoForksPage';
 import StargazersPage from './pages/StargazersPage';
 import PrDiffPage from './pages/PrDiffPage';
 import AiAssistantPage from './pages/AiAssistantPage';
+import MorePage from './pages/MorePage';
 import i18n from "@/i18n";
 
 export interface RouteConfig {
@@ -87,4 +88,5 @@ export const routes: RouteConfig[] = [
   { name: i18n.t('设置'), path: '/settings', element: <SettingsPage /> },
   { name: 'GraphQL Playground', path: '/graphql-playground', element: <GraphQLPlaygroundPage /> },
   { name: i18n.t('AI 助手'), path: '/ai-assistant', element: <AiAssistantPage /> },
+  { name: '全部功能', path: '/more', element: <MorePage /> },
 ];
