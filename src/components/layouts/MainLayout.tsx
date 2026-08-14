@@ -26,6 +26,7 @@ import {
   Braces,
   Sparkles,
   Languages,
+  LayoutGrid,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -96,6 +97,7 @@ const navItems: NavItem[] = [
   { label: i18n.t('数据导出'), path: '/export', icon: Download },
   { label: 'GraphQL', path: '/graphql-playground', icon: Braces },
   { label: i18n.t('AI 助手'), path: '/ai-assistant', icon: Sparkles },
+  { label: '全部功能', path: '/more', icon: LayoutGrid },
 ];
 
 const themeIcons: Record<ThemeMode, React.ComponentType<{ className?: string }>> = {
@@ -491,6 +493,18 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
               onClick={() => navigate('/notifications')}
             >
               <Bell className="w-4 h-4" />
+            </Button>
+
+            {/* 全部功能（九宫格）：Android 端原生底部导航仅 5 个 Tab，
+                其余 28+ 功能页通过此入口直达 */}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="text-muted-foreground hover:bg-secondary"
+              onClick={() => navigate('/more')}
+              aria-label="全部功能"
+            >
+              <LayoutGrid className="w-4 h-4" />
             </Button>
 
             {/* 用户下拉菜单 */}

@@ -577,6 +577,16 @@ class MainActivity : AppCompatActivity() {
         // 显式声明不由框架自动 fit，由我们手动通过 WindowInsets 处理 padding。
         WindowCompat.setDecorFitsSystemWindows(window, false)
 
+        // ── 修复 Issue #5：底部"大块黑色空白"（REDMI K80 / Android 16） ──
+        // 边到边模式下 API 29+ 默认启用系统栏对比度 scrim：系统会在导航条
+        // 区域叠加半透明黑罩以"保证对比度"。浅色主题下底部容器是浅色，
+        // 被黑罩压暗后用户看到的即是一大块黑色的空。显式关闭两个 scrim，
+        // 让 bottomNavContainer 自身的颜色完整接管该区域。
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            window.isNavigationBarContrastEnforced = false
+            window.isStatusBarContrastEnforced = false
+        }
+
         // 系统栏颜色设为透明：边到边模式下内容填充整个窗口，
         // 颜色外观由 WindowInsetsControllerCompat 控制（浅色/深色图标）
         @Suppress("DEPRECATION")
@@ -612,21 +622,38 @@ class MainActivity : AppCompatActivity() {
         //   启动画面期间状态栏被隐藏，insets.top = 0，spacer 高度 = 0 不占空间；
         //   dismissSplash 恢复状态栏后 insets 重新派发，spacer 自动撑开正确高度。
         ViewCompat.setOnApplyWindowInsetsListener(statusBarSpacer) { _, insets ->
+            // 防御异常 inset：部分 ROM 可能派发远超实际状态栏的高度，上限 120dp
             val statusBarHeight = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top
+            val capPx = (120 * resources.displayMetrics.density).toInt()
             val lp = statusBarSpacer.layoutParams
-            lp.height = statusBarHeight
-            statusBarSpacer.layoutParams = lp
+            val height = statusBarHeight.coerceAtMost(capPx)
+            if (lp.height != height) {
+                lp.height = height
+                statusBarSpacer.layoutParams = lp
+            }
             insets
         }
 
         // 【底部】将系统导航条高度同步给 navBarSpacer，使底部容器自然撑开，
-        //   BottomNavigationView 始终保持固定 80dp，图标与文字不会因 padding 压缩而重叠。
+        //   BottomNavigationView 始终保持固定 62dp，图标与文字不会因 padding 压缩而重叠。
         //   Kotlin 2.0 K2 编译器对 Java SAM 推断更严格：用 _ 丢弃未使用的 view 参数。
+        //
+        //   修复 Issue #5（底部大块黑色空白）：
+        //   1) 仅当系统导航条真正可见时才占位（手势条隐藏、IME 弹出等场景收起），
+        //      避免残留一块与导航栏同色、却没有任何内容的"空"区域；
+        //   2) 高度上限 200dp：部分 ROM 在分屏/转场时会派发异常大的 inset，
+        //      直接信任会撑出大面积纯色块；
+        //   3) 高度变化不影响 BottomNavigationView 自身（62dp）。
         ViewCompat.setOnApplyWindowInsetsListener(navBarSpacer) { _, insets ->
-            val navBarHeight = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
+            val navVisible = insets.isVisible(WindowInsetsCompat.Type.navigationBars())
+            val rawBottom = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
+            val capPx = (200 * resources.displayMetrics.density).toInt()
+            val height = if (navVisible) rawBottom.coerceAtMost(capPx) else 0
             val lp = navBarSpacer.layoutParams
-            lp.height = navBarHeight
-            navBarSpacer.layoutParams = lp
+            if (lp.height != height) {
+                lp.height = height
+                navBarSpacer.layoutParams = lp
+            }
             insets
         }
 
@@ -757,6 +784,9 @@ class MainActivity : AppCompatActivity() {
             displayZoomControls = false
             builtInZoomControls = false
             mediaPlaybackRequiresUserGesture = false
+            // window.open / target=_blank 由 WebChromeClient.onCreateWindow 接管，
+            // 否则 JS window.open 在 WebView 中静默失效（PC 可用、Android 无反应）
+            setSupportMultipleWindows(true)
         }
 
     }
@@ -1098,6 +1128,32 @@ class MainActivity : AppCompatActivity() {
 
     private fun setupWebChromeClient() {
         webView.webChromeClient = object : WebChromeClient() {
+
+            /**
+             * window.open / target=_blank 兜底：WebView 默认不创建新窗口，
+             * 导致 JS window.open 静默失效（PC 端可用、Android 端无反应的功能缺口）。
+             * 统一交给系统浏览器处理，与 shouldOverrideUrlLoading 的策略一致，
+             * 避免外部页面破坏 React 应用的历史栈。
+             */
+            override fun onCreateWindow(
+                view: WebView?,
+                isDialog: Boolean,
+                isUserGesture: Boolean,
+                resultMsg: android.os.Message?,
+            ): Boolean {
+                val transport = resultMsg?.obj as? WebView.WebViewTransport
+                val url = view?.hitTestResult?.extra
+                if (!url.isNullOrBlank() && (url.startsWith("http://") || url.startsWith("https://"))) {
+                    runCatching {
+                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                    }
+                }
+                // 不创建新的 WebView 实例，直接结束消息循环
+                transport?.webView = null
+                resultMsg?.sendToTarget()
+                return true
+            }
+
             override fun onShowFileChooser(
                 webView: WebView?,
                 filePathCallback: ValueCallback<Array<Uri>>,
