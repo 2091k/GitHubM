@@ -25,11 +25,8 @@ import {
 import type { ModelConfig } from './aiTypes';
 import { MODEL_DEFS, getModelDef, loadProviderKey, saveProviderKey } from './aiUtils';
 import type { ModelType } from './aiUtils';
-import { fetchModelsFromAPI } from './aiSupabase';
+import { fetchModelsFromAPI, testProviderConnection } from './aiProviders';
 import i18n from "@/i18n";
-
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string;
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
 
 type FetchState = 'idle' | 'loading' | 'success' | 'error';
 type TestState = 'idle' | 'testing' | 'success' | 'error';
@@ -82,21 +79,7 @@ const ModelSettingsDialog = memo(function ModelSettingsDialog({
     setTestState('testing');
     setTestResult({});
     try {
-      const res = await fetch(`${SUPABASE_URL}/functions/v1/ai-test-connection`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
-          'apikey': SUPABASE_ANON_KEY,
-        },
-        body: JSON.stringify({
-          type: draft.type,
-          api_key: draft.api_key,
-          model: draft.model,
-          endpoint: draft.endpoint,
-        }),
-      });
-      const data = await res.json() as { success: boolean; elapsedMs?: number; error?: string };
+      const data = await testProviderConnection(draft.type, draft.api_key, draft.endpoint, draft.model);
       if (data.success) {
         setTestState('success');
         setTestResult({ elapsedMs: data.elapsedMs });
@@ -120,8 +103,6 @@ const ModelSettingsDialog = memo(function ModelSettingsDialog({
         draft.type,
         draft.api_key || '',
         draft.endpoint || '',
-        SUPABASE_URL,
-        SUPABASE_ANON_KEY,
       );
       if (!models.length) throw new Error(i18n.t('未返回任何模型，请检查 API Key 或接口地址'));
       setFetchedModels(prev => ({ ...prev, [draft.type]: models }));
@@ -263,10 +244,9 @@ const ModelSettingsDialog = memo(function ModelSettingsDialog({
                   {i18n.t('✓ 已获取')}{fetchedModels[draft.type].length} {i18n.t('个可用模型')}</p>
               )}
               <p className="text-xs text-muted-foreground">
-                {i18n.t('Key 仅保存在本地，通过服务端安全转发，不会上传至第三方')}</p>
-              {/* 测试连接按钮（文心无需测试） */}
-              {draft.type !== 'wenxin' && (
-                <div className="flex flex-col gap-1.5">
+                {i18n.t('Key 仅保存在本地，由浏览器直连官方 API，不会上传至任何服务器')}</p>
+              {/* 测试连接按钮 */}
+              <div className="flex flex-col gap-1.5">
                   <Button
                     type="button"
                     variant="outline"
@@ -293,7 +273,6 @@ const ModelSettingsDialog = memo(function ModelSettingsDialog({
                     </div>
                   )}
                 </div>
-              )}
             </div>
           )}
 
@@ -336,15 +315,6 @@ const ModelSettingsDialog = memo(function ModelSettingsDialog({
                 onChange={e => setDraft(prev => ({ ...prev, model: e.target.value }))}
               />
               <p className="text-xs text-muted-foreground">{i18n.t('填入 API Key 后点击「获取模型」可自动拉取')}</p>
-            </div>
-          )}
-
-          {/* 文心免费说明 */}
-          {draft.type === 'wenxin' && (
-            <div className="flex items-start gap-2 bg-primary/5 border border-primary/20 rounded-lg p-3">
-              <Sparkles className="w-4 h-4 text-primary shrink-0 mt-0.5" />
-              <p className="text-xs text-muted-foreground">
-                {i18n.t('文心 ERNIE 4.5 由平台提供，无需配置密钥，直接免费使用。')}</p>
             </div>
           )}
 

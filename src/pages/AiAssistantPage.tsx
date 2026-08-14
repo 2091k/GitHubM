@@ -2,7 +2,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { getRepoBranches } from '@/services/github';
-import { sendStreamRequest } from '@/lib/sse';
+import { runAiAgent } from '@/lib/aiAgentCore';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
@@ -42,9 +42,6 @@ import { upsertSession, insertMessages, insertToolExecutionLogs, upsertWorkflowS
 import type { Message, ModelConfig, ChatSession, ChatSessionMessage, ToolHistoryItem, TaskPlanStep, InlineStep, InlineTool, Attachment, FileRequest, StreamMetrics } from '@/components/ai/aiTypes';
 import { appendUsageRecord } from '@/components/ai/usageStats';
 import i18n from "@/i18n";
-
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string;
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
 
 // ── 写操作工具集合：断网时涉及这些工具不静默自动重连 ──────────────────────────
 const WRITE_TOOLS = new Set([
@@ -760,29 +757,9 @@ export default function AiAssistantPage() {
       }
     };
 
-    await sendStreamRequest({
-      functionUrl: `${SUPABASE_URL}/functions/v1/ai-assistant`,
+    await runAiAgent({
       requestBody: reqBody,
-      supabaseAnonKey: SUPABASE_ANON_KEY,
-      timeoutMs: modelConfig.timeoutMs ?? 300_000,
-      // idle timeout：45 秒无任何 SSE 事件则视为假死，自动触发重连
-      idleTimeoutMs: 45_000,
-      onIdle: () => {
-        // idle 触发：等同网络中断，走现有重连逻辑
-        networkInterruptedRef.current = true;
-        setIsNetworkInterrupted(true);
-        cancelAndFlush();
-        setMessages(prev => prev.map(m => {
-          if (m.role !== 'assistant' || !m.streaming) return m;
-          return m.bubbleType === 'thinking'
-            ? { ...m, streaming: false, thinkingDone: true }
-            : { ...m, streaming: false };
-        }));
-        setIsStreaming(false);
-        if (!document.hidden && !abortRef.current?.signal.aborted) {
-          triggerReconnectOrWarn();
-        }
-      },
+      signal: abortRef.current.signal,
       onMetrics: (metrics) => {
         // 收到首 token 或流结束时更新指标
         setStreamMetrics(prev => ({ ...prev, ...metrics }));
@@ -1209,20 +1186,8 @@ export default function AiAssistantPage() {
       }
     };
 
-    sendStreamRequest({
-      functionUrl: `${SUPABASE_URL}/functions/v1/ai-assistant`,
+    runAiAgent({
       requestBody: newReqBody,
-      supabaseAnonKey: SUPABASE_ANON_KEY,
-      timeoutMs: modelConfig.timeoutMs ?? 300_000,
-      idleTimeoutMs: 45_000,
-      onIdle: () => {
-        // 重连时再次 idle：停止，不再继续递归重连
-        cancelAndFlush();
-        setMessages(prev => prev.map(m =>
-          m.id === aiMsg.id ? { ...m, content: i18n.t('⚠️ 重连后仍无响应，请手动重试。'), streaming: false } : m
-        ));
-        setIsStreaming(false);
-      },
       signal: abortRef.current.signal,
       onData: (data) => {
         const chunk = parseTypedChunk(data);

@@ -52,11 +52,6 @@ jobs:
       # ── 步骤 3：单元测试 ────────────────────────────────────────
       - name: 单元测试
         run: pnpm test
-        env:
-          # 测试不需要真实的 Supabase 连接
-          VITE_SUPABASE_URL: https://mock.supabase.co
-          VITE_SUPABASE_ANON_KEY: mock-anon-key
-
       # ── 步骤 4：生产构建验证 ────────────────────────────────────
       - name: 生产构建验证
         run: |
