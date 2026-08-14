@@ -343,7 +343,7 @@ export default function ToolWorkshopPanel({ refreshTrigger = 0, onProposalCount 
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [stats, setStats]         = useState<Stats | null>(null);
   const [loading, setLoading]     = useState(false);
-  const [filter, setFilter]       = useState<string>('pending');
+  const [filter, setFilter]       = useState<'all' | Proposal['status']>('pending');
   const [applyTarget, setApplyTarget] = useState<Proposal | null>(null);
   const [applyOpen, setApplyOpen]     = useState(false);
 

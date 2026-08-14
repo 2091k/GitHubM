@@ -1133,7 +1133,6 @@ export default function AiAssistantPage() {
           if (!isUserAbort) toast.error(err.message, { duration: 5000 });
         }
       },
-      signal: abortRef.current.signal,
     });
   }, [input, attachments, formatAttachmentsForMessage, isStreaming, messages, selectedRepo, token, modelConfig, selectedBranch, persistMessages]);
 
