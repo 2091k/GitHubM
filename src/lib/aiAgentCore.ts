@@ -732,7 +732,18 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
       }, required: ["tool_name", "explanation"] },
     },
   },
-];
+  // ── 开发辅助：npm 包搜索 ─────────────────────────────────────────────────
+  {
+    type: "function", function: {
+      name: "npm_search",
+      description: "搜索 npm 官方仓库（registry.npmjs.org 公开搜索 API）查询真实包信息：包名、最新版本、描述、下载量。用于依赖选型、查证版本号、寻找替代包——绝不凭空编造包名或版本号。",
+      parameters: { type: "object", properties: {
+        query: { type: "string", description: "搜索关键词，如 react、lodash、vite" },
+        size:  { type: "number", description: "返回条数，默认 5，最大 50" },
+      }, required: ["query"] },
+    },
+  },
+ ];
 
 function buildLLMRequest(cfg: ModelConfig): {
   url: string;
@@ -5085,6 +5096,35 @@ function coerceStr(v: unknown, fallback = ""): string {
   return String(v);
 }
 
+/** npm 包搜索：直连 registry.npmjs.org 公开搜索 API（CORS 开放，免鉴权）。 */
+async function searchNpmPackages(query: string, size: number): Promise<string> {
+  if (!query) return "❌ 参数缺失：query 为必填";
+  const limit = Math.max(1, Math.min(50, size || 5));
+  try {
+    const resp = await fetch(
+      `https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(query)}&size=${limit}`,
+      { headers: { Accept: "application/json" } },
+    );
+    if (!resp.ok) return `❌ npm 搜索失败（HTTP ${resp.status}）`;
+    const data = (await resp.json()) as {
+      objects?: Array<{
+        package?: { name?: string; version?: string; description?: string; links?: { npm?: string } };
+        score?: { final?: number };
+      }>;
+    };
+    const objs = data?.objects ?? [];
+    if (objs.length === 0) return `未找到与 "${query}" 匹配的 npm 包。`;
+    const lines = objs.map((o, i) => {
+      const p = o.package ?? {};
+      const score = o.score?.final != null ? ` 热度${o.score.final.toFixed(2)}` : "";
+      return `${i + 1}. ${p.name ?? "?"}@${p.version ?? "?"}${score}\n   ${(p.description ?? "").slice(0, 140) || "（无描述）"}\n   ${p.links?.npm ?? ""}`;
+    });
+    return `npm 搜索结果（${objs.length} 条，查询 "${query}"）：\n${lines.join("\n")}`;
+  } catch (e) {
+    return `❌ npm 搜索请求失败：${e instanceof Error ? e.message : String(e)}`;
+  }
+}
+
 function executeTool(
   ctx: GithubContext,
   call: Record<string, unknown>,
@@ -5216,6 +5256,7 @@ function executeTool(
       p("max_fix_attempts") ? parseInt(p("max_fix_attempts"), 10) : 3,
     );
     case "get_run_artifacts":        return getRunArtifacts(ctx, p("run_id"));
+    case "npm_search":             return searchNpmPackages(p("query"), p("size") ? parseInt(p("size"), 10) : 5);
     default: {
       // ── 官方 GitHub MCP 工具透传（44 个官方工具：issues/PRs/文件/搜索/CI 等） ──
       // MCP 工具名与本地工具名互不重叠时走这里；参数按原始类型透传（保留数字/布尔值，
@@ -6058,6 +6099,22 @@ export async function runAiAgent(options: RunAgentOptions): Promise<void> {
       ].filter(Boolean).join("\n");
       systemPromptText += mcpNote;
     }
+    // ── 开发技能注入：Bug 修复方法论 + 前端最佳实践（所有模式生效） ───────────
+    const skillsAppendix = [
+      `\n\n【Bug 修复方法论】`,
+      `1. 先读报错日志与失败构建输出，定位确切错误信息与行号；`,
+      `2. 判断根因类型（代码逻辑/配置/依赖版本/环境），不要盲目改代码；`,
+      `3. 最小修复：只改动必要文件，保持变更范围最小，避免顺手重构；`,
+      `4. 修复后验证：跑 lint/构建/相关测试确认通过后再提交；`,
+      `5. 修复失败时回读日志调整方案，不要重复同样的修改。`,
+      `【前端开发最佳实践（本项目为 React + Vite + TypeScript）】`,
+      `1. 数据获取放在事件处理器或 useEffect 中，避免渲染期间副作用；`,
+      `2. 大列表分页或虚拟化，避免一次渲染上千个节点；`,
+      `3. 组件保持单一职责，避免巨型组件；状态提升最小化，减少不必要 re-render；`,
+      `4. 图片与静态资源懒加载，控制首屏 bundle 体积；`,
+      `5. 新依赖先查证真实版本（可用 npm_search 工具），不凭空编造版本号。`,
+    ].join("\n");
+    systemPromptText += skillsAppendix;
     let fullMessages: Message[] = [{ role: "system", content: systemPromptText }, ...messages];
     console.log(`[main] model=${modelConfig.type} hasApiKey=${!!modelConfig.api_key} owner=${owner} repo=${repo} resume=${isResuming} autoMode=${isAutoMode}`);
     // 检查前端传来的历史消息：如果已有带 reasoning_content 的 assistant 消息，
