@@ -3,7 +3,40 @@
 // ReAct Agent：AI 通过工具链读取/写入 GitHub 仓库文件
 // 浏览器端直接调用各家 LLM API 与 GitHub API（均支持 CORS），无需任何后端。
 // 任务计划/快照持久化改为 localStorage，断点恢复同样可用。
+// v2：工具层升级为「官方 GitHub Remote MCP（44 工具）+ 本地补充工具」双通道，
+//     MCP 会话/工具 Schema 带缓存，MCP 不可达时本地工具兜底。
 import type { StreamMetrics } from '@/components/ai/aiTypes';
+import {
+  GitHubMcpClient,
+  loadCachedTools,
+  saveCachedTools,
+  loadCachedInstructions,
+  saveCachedInstructions,
+  type McpToolSchema,
+} from './mcpClient';
+
+// ── 官方 GitHub MCP 集成状态（模块级，会话内复用） ─────────────────────────
+let mcpClient: GitHubMcpClient | null = null;
+let mcpToolNames = new Set<string>();
+let mcpOpenAiTools: ToolDefinition[] = [];
+let mcpReady = false;
+let mcpFailed = false;
+
+/** 把 MCP tools/list 结果同步到模块级工具注册表 */
+function applyMcpTools(tools: McpToolSchema[]) {
+  mcpToolNames = new Set(tools.map((t) => t.name));
+  mcpOpenAiTools = tools
+    .filter((t) => t.inputSchema && Object.keys(t.inputSchema).length > 0)
+    .map((t) => ({
+      type: "function" as const,
+      function: {
+        name: t.name,
+        description: t.description ?? "",
+        parameters: t.inputSchema as Record<string, unknown>,
+      },
+    }));
+  mcpReady = tools.length > 0;
+}
 
 // ── 模型配置 ────────────────────────────────────────────────────────────────
 
@@ -58,12 +91,14 @@ interface ToolDefinition {
   function: {
     name: string;
     description: string;
-    parameters: {
-      type: "object";
-      properties: Record<string, { type: string; description: string }>;
-      required?: string[];
-    };
+    // JSON Schema（兼容 OpenAI function 与 MCP inputSchema，宽松处理）
+    parameters: Record<string, unknown>;
   };
+}
+
+/** 合并工具定义：本地补充工具 + 官方 MCP 工具（运行时动态） */
+function getAllToolDefinitions(): ToolDefinition[] {
+  return [...TOOL_DEFINITIONS, ...mcpOpenAiTools];
 }
 
 const TOOL_DEFINITIONS: ToolDefinition[] = [
@@ -702,8 +737,9 @@ function buildLLMRequest(cfg: ModelConfig): {
   // 仅当 temperature 有值时才附加，避免覆盖模型默认行为
   const tempExtra = cfg.temperature !== undefined ? { temperature: cfg.temperature } : {};
   // 支持 FC 的模型注入 tools 定义，并设置 tool_choice:"auto" 让模型自主决定是否调用工具
+  // parallel_tool_calls: 模型可单轮返回多个工具调用，Agent 循环并行执行（只读工具）
   const fcExtra = supportsFunctionCalling(cfg.type, cfg.model)
-    ? { tools: TOOL_DEFINITIONS, tool_choice: "auto", parallel_tool_calls: false }
+    ? { tools: getAllToolDefinitions(), tool_choice: "auto", parallel_tool_calls: true }
     : {};
   switch (cfg.type) {
     case "deepseek": {
@@ -4767,7 +4803,26 @@ async function callLLM(
     try {
       parsedArgs = JSON.parse(fcArgsBuf || "{}");
     } catch {
-      console.warn(`[callLLM] FC arguments JSON 解析失败，原始内容：${fcArgsBuf.slice(0, 200)}`);
+      // LLM 偶发单轮输出多个相邻 JSON 对象（如 {"path": ""}{"path": "src"}），
+      // 或前后夹杂说明文字。优先取最后一个可解析对象（通常是最完整的参数）。
+      const matches = fcArgsBuf.match(/\{(?:[^{}]|\{[^{}]*\})*\}/g) ?? [];
+      let recovered: Record<string, unknown> | null = null;
+      for (let i = matches.length - 1; i >= 0; i--) {
+        try { recovered = JSON.parse(matches[i]); break; } catch { /* 继续向前尝试 */ }
+      }
+      if (!recovered) {
+        const start = fcArgsBuf.lastIndexOf("{");
+        const end = fcArgsBuf.lastIndexOf("}");
+        if (start >= 0 && end > start) {
+          try { recovered = JSON.parse(fcArgsBuf.slice(start, end + 1)); } catch { /* ignore */ }
+        }
+      }
+      parsedArgs = recovered ?? {};
+      console.warn(
+        recovered
+          ? `[callLLM] FC arguments JSON 解析失败，已从多对象输出中恢复：${JSON.stringify(recovered).slice(0, 160)}`
+          : `[callLLM] FC arguments JSON 解析失败，原始内容：${fcArgsBuf.slice(0, 200)}`
+      );
     }
     console.log(`[callLLM] FC 工具调用 name=${fcName} id=${fcId} argsLen=${fcArgsBuf.length}`);
     return {
@@ -5156,7 +5211,37 @@ function executeTool(
       p("max_fix_attempts") ? parseInt(p("max_fix_attempts"), 10) : 3,
     );
     case "get_run_artifacts":        return getRunArtifacts(ctx, p("run_id"));
-    default: return Promise.resolve(`未知工具: ${String(call.tool)}`);
+    default: {
+      // ── 官方 GitHub MCP 工具透传（44 个官方工具：issues/PRs/文件/搜索/CI 等） ──
+      // MCP 工具名与本地工具名互不重叠时走这里；参数按原始类型透传（保留数字/布尔值，
+      // 官方 JSON Schema 对 owner/repo 之外的参数有精确类型要求，不做字符串化）。
+      if (mcpReady && mcpClient && mcpToolNames.has(String(call.tool))) {
+        const mcp = mcpClient; // 收窄为 non-null，闭包内类型安全
+        // MCP 不可达且初始化失败过：快速返回友好错误，避免每次工具调用空耗 45s 超时
+        if (mcpFailed) {
+          return Promise.resolve(
+            `❌ MCP 服务当前不可达（连接失败），工具 ${String(call.tool)} 暂不可用。请改用本地工具（read_file/write_file/search_code 等）完成操作。`,
+          );
+        }
+        return (async () => {
+          const args: Record<string, unknown> = {};
+          for (const [k, v] of Object.entries(call)) {
+            if (k !== "tool" && v !== undefined && v !== null && v !== "") args[k] = v;
+          }
+          try {
+            const result = await mcp.callTool(String(call.tool), args);
+            mcpFailed = false; // 调用成功说明 MCP 服务已恢复
+            if (result.isError) {
+              return `❌ MCP 工具 ${String(call.tool)} 返回错误：${result.text}`;
+            }
+            return result.text || `✅ MCP 工具 ${String(call.tool)} 执行完成（无文本输出）`;
+          } catch (e) {
+            return `❌ MCP 工具 ${String(call.tool)} 执行失败：${e instanceof Error ? e.message : String(e)}`;
+          }
+        })();
+      }
+      return Promise.resolve(`未知工具: ${String(call.tool)}`);
+    }
   }
 }
 
@@ -5747,6 +5832,15 @@ class SecurityPolicyEngine {
     if (writeTools.has(toolName) && this.protectedBranches.has(opBranch)) {
       throw new Error(`【安全风控】禁止直接向受保护分支 "${opBranch}" 写入代码。请先调用 create_branch 切换到新分支，完成后提交 PR。`);
     }
+
+    // 官方 GitHub MCP 写工具：同样禁止显式指定受保护分支直接写入（迫使用 PR 流程）
+    const mcpWriteTools = new Set(["create_or_update_file", "push_files"]);
+    if (mcpWriteTools.has(toolName)) {
+      const mcpBranch = String(callParams.branch ?? "");
+      if (mcpBranch && this.protectedBranches.has(mcpBranch)) {
+        throw new Error(`【安全风控】禁止通过 MCP 直接向受保护分支 "${mcpBranch}" 写入。请先创建新分支，完成后提交 PR。`);
+      }
+    }
   }
 }
 
@@ -5899,6 +5993,33 @@ export async function runAiAgent(options: RunAgentOptions): Promise<void> {
 
   try {
     await (async () => {
+    // ── 官方 GitHub MCP 初始化（可选能力：失败降级为纯本地工具，不阻塞主流程） ──
+    try {
+      // 第一步：缓存兜底注册（MCP 网络不通时工具面仍可见，调用时返回友好错误）
+      const cached = loadCachedTools();
+      if (cached && Date.now() - cached.cachedAt < 24 * 3_600_000) {
+        applyMcpTools(cached.tools);
+        console.log(`[mcp] cached tools registered: ${cached.tools.length}`);
+      }
+      // 第二步：实连官方端点（会话内复用同一客户端）
+      if (!mcpClient) {
+        mcpClient = new GitHubMcpClient({ token: githubToken, timeoutMs: 45_000 });
+      }
+      if (mcpClient.state !== "ready") {
+        await mcpClient.connect(abortSig);
+      }
+      const mcpTools = await mcpClient.listTools(abortSig);
+      if (mcpTools.length > 0) {
+        applyMcpTools(mcpTools);
+        saveCachedTools(mcpTools);
+        mcpFailed = false;
+        console.log(`[mcp] connected: ${mcpTools.length} tools (github-mcp-server/remote)`);
+      }
+      if (mcpClient.instructions) saveCachedInstructions(mcpClient.instructions);
+    } catch (e) {
+      mcpFailed = true;
+      console.warn(`[mcp] init failed (${(e as Error).message}); local tools fallback`);
+    }
     try {
     // 工作流 DB id（首轮收到 plan 后写入）
     let workflowDbId: string | null = null;
@@ -5920,7 +6041,19 @@ export async function runAiAgent(options: RunAgentOptions): Promise<void> {
       }
     }
 
-    let fullMessages: Message[] = [{ role: "system", content: buildSystemPrompt(targetBranch, isAutoMode, modelConfig.type, modelConfig) }, ...messages];
+    let systemPromptText = buildSystemPrompt(targetBranch, isAutoMode, modelConfig.type, modelConfig);
+    // ── 官方 MCP 工具面说明（帮助 LLM 理解双通道工具路由） ────────────────────
+    if (mcpReady) {
+      const mcpNote = [
+        `\n\n【官方 GitHub MCP 工具面】`,
+        `已接入 GitHub 官方 Remote MCP（${mcpToolNames.size} 个官方工具），覆盖 issues/PRs/文件读写/搜索/CI/仓库管理等场景。`,
+        `MCP 工具参数为 JSON Schema 强类型：owner/repo 为必填字符串，数字/布尔参数直接传原始值（不要加引号）。`,
+        `本地同名工具优先；官方工具名不在本地注册表中时直接按 Schema 调用即可。`,
+        mcpFailed ? "⚠️ MCP 当前不可达，请优先使用本地工具（read_file/write_file/search_code 等）。" : "",
+      ].filter(Boolean).join("\n");
+      systemPromptText += mcpNote;
+    }
+    let fullMessages: Message[] = [{ role: "system", content: systemPromptText }, ...messages];
     console.log(`[main] model=${modelConfig.type} hasApiKey=${!!modelConfig.api_key} owner=${owner} repo=${repo} resume=${isResuming} autoMode=${isAutoMode}`);
     // 检查前端传来的历史消息：如果已有带 reasoning_content 的 assistant 消息，
     // 后续所有 assistant 消息也必须携带该字段（DeepSeek-R1 API 强制要求）
