@@ -31,7 +31,9 @@ function applyMcpTools(tools: McpToolSchema[]) {
       type: "function" as const,
       function: {
         name: t.name,
-        description: t.description ?? "",
+        // 官方 description 部分长达数百字符，44 个工具全量发送会显著膨胀 prompt；
+        // 截断到 150 字符（Schema 中的参数 description 保留，足够 LLM 正确调用）。
+        description: (t.description ?? "").slice(0, 150),
         parameters: t.inputSchema as Record<string, unknown>,
       },
     }));
@@ -1076,21 +1078,37 @@ async function getFileTree(
     const data = await githubRequest(ctx, `/repos/${ctx.owner}/${ctx.repo}/contents/${path}`);
     if (!Array.isArray(data)) return "";
     const indent = "  ".repeat(currentDepth);
-    const lines: string[] = [];
+    // 同层目录并发拉取（8 并发池）：原实现逐层串行 await，深目录树（如 .skills 50+ 子目录）
+    // 每个目录一个网络往返，总耗时线性叠加（实测 727s 撞超时）；并发后同层只花一个往返量级。
+    const parts: string[] = [];
+    const dirPromises: Array<Promise<string>> = [];
     for (const item of data as Array<{ name: string; type: string; size: number }>) {
       if (item.type === "dir") {
         if (ignorePatterns.includes(item.name)) {
-          lines.push(`${indent}📁 ${item.name}/ (已跳过)`);
+          parts.push(`${indent}📁 ${item.name}/ (已跳过)`);
           continue;
         }
-        lines.push(`${indent}📁 ${item.name}/`);
-        const sub = await getFileTree(ctx, path ? `${path}/${item.name}` : item.name, maxDepth, currentDepth + 1, ignorePatterns);
-        if (sub) lines.push(sub);
+        parts.push(`${indent}📁 ${item.name}/`);
+        parts.push(""); // 子内容占位，按序回填
+        dirPromises.push(getFileTree(ctx, path ? `${path}/${item.name}` : item.name, maxDepth, currentDepth + 1, ignorePatterns));
       } else {
-        lines.push(`${indent}📄 ${item.name} (${item.size}B)`);
+        parts.push(`${indent}📄 ${item.name} (${item.size}B)`);
       }
     }
-    return lines.join("\n");
+    // 8 并发分块执行，避免极端深树一次发出数百请求
+    const subs: string[] = new Array(dirPromises.length);
+    for (let i = 0; i < dirPromises.length; i += 8) {
+      const chunk = await Promise.all(dirPromises.slice(i, i + 8));
+      for (let j = 0; j < chunk.length; j++) subs[i + j] = chunk[j];
+    }
+    let di = 0;
+    for (let i = 0; i < parts.length; i++) {
+      if (parts[i] === "" && di < subs.length) {
+        parts[i] = subs[di];
+        di++;
+      }
+    }
+    return parts.filter((s) => s !== "").join("\n");
   } catch { return ""; }
 }
 
@@ -5471,8 +5489,27 @@ function sanitizeToolCallMessages(msgs: Message[]): Message[] {
       break;
     }
   }
-
   return result;
+}
+
+/** 每轮发送给 LLM 的最大消息条数（system 不计入） */
+const LLM_HISTORY_LIMIT = 24;
+
+/**
+ * LLM 请求历史裁剪：保留 system + 最近 limit 条消息。
+ * 历史无限累积会让每轮请求 prompt 线性膨胀（实测 TTFT 300s+ 的元凶之一）；
+ * 截断时复用 sanitizeToolCallMessages 清理不完整 tool_calls 配对，避免 API 400。
+ */
+function trimForLLM(msgs: Message[], limit: number): Message[] {
+  if (msgs.length <= limit) return msgs;
+  const sys = msgs.filter((m) => m.role === "system");
+  const rest = msgs.filter((m) => m.role !== "system");
+  const kept = sanitizeToolCallMessages(rest.slice(-(limit - sys.length)));
+  const truncated = kept.length < rest.length;
+  const head: Message[] = truncated
+    ? [{ role: "user", content: "【系统提示】更早的对话历史已截断以节省上下文，请基于当前内容继续任务。" }]
+    : [];
+  return [...sys, ...head, ...kept];
 }
 
 /** 保存 messages 快照（用于批次中断后恢复） */
@@ -6115,7 +6152,7 @@ export async function runAiAgent(options: RunAgentOptions): Promise<void> {
       `5. 新依赖先查证真实版本（可用 npm_search 工具），不凭空编造版本号。`,
     ].join("\n");
     systemPromptText += skillsAppendix;
-    let fullMessages: Message[] = [{ role: "system", content: systemPromptText }, ...messages];
+    let fullMessages: Message[] = [{ role: "system", content: systemPromptText }, ...trimForLLM(messages, LLM_HISTORY_LIMIT)];
     console.log(`[main] model=${modelConfig.type} hasApiKey=${!!modelConfig.api_key} owner=${owner} repo=${repo} resume=${isResuming} autoMode=${isAutoMode}`);
     // 检查前端传来的历史消息：如果已有带 reasoning_content 的 assistant 消息，
     // 后续所有 assistant 消息也必须携带该字段（DeepSeek-R1 API 强制要求）
@@ -6240,7 +6277,7 @@ export async function runAiAgent(options: RunAgentOptions): Promise<void> {
       };
 
       try {
-        const llmResult = await callLLM(modelConfig, fullMessages, onThinkingChunk, heartbeat, onUsageCb);
+        const llmResult = await callLLM(modelConfig, trimForLLM(fullMessages, LLM_HISTORY_LIMIT), onThinkingChunk, heartbeat, onUsageCb);
         assistantText = llmResult.text;
         // FC 模式下，结构化工具调用直接挂到本轮作用域；非 FC 则为 null（后续走 extractToolCall）
         fcToolCall = llmResult.toolCall;
