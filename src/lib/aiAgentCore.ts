@@ -96,9 +96,14 @@ interface ToolDefinition {
   };
 }
 
-/** 合并工具定义：本地补充工具 + 官方 MCP 工具（运行时动态） */
+/** 合并工具定义：本地补充工具 + 官方 MCP 工具（运行时动态，本地同名工具优先） */
 function getAllToolDefinitions(): ToolDefinition[] {
-  return [...TOOL_DEFINITIONS, ...mcpOpenAiTools];
+  const localNames = new Set(TOOL_DEFINITIONS.map((t) => t.function.name));
+  // 本地同名工具优先：executeTool 的 switch 先于 MCP 透传匹配，
+  // 因此 MCP 重名工具永远不会被执行，必须从发给 LLM 的工具面中排除，
+  // 否则 DeepSeek 等 API 会以 "Tool names must be unique." 拒绝请求。
+  const mcpOnly = mcpOpenAiTools.filter((t) => !localNames.has(t.function.name));
+  return [...TOOL_DEFINITIONS, ...mcpOnly];
 }
 
 const TOOL_DEFINITIONS: ToolDefinition[] = [
