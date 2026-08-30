@@ -22,7 +22,7 @@ GitHubM 是一个全功能的 GitHub 管理面板，提供仓库浏览、Issue �
 
 支持 **Web 浏览器** 和 **Android APK** 两种使用方式。
 
-> **在线体验**：[qq5855144.github.io/GitHubM](https://qq5855144.github.io/GitHubM/)
+> **在线体验**：[2091k.github.io/GitHubM](https://2091k.github.io/GitHubM/)
 
 ---
 
