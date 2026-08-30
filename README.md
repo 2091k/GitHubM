@@ -244,7 +244,7 @@ pnpm exec vite build    # 产物输出到 dist/
 
 ## 方式一：Fork 后直接自动部署（最简单，推荐）
 
-1. Fork 原仓库：[https://github.com/qq5855144/GitHubM](https://github.com/qq5855144/GitHubM) 到你自己账号
+1. Fork 原仓库：[https://github.com/2091k/GitHubM](https://github.com/2091k/GitHubM) 到你自己账号
 2. 进入你 Fork 后的仓库 → `Settings` → `Pages`
    - **Build and deployment → Source：选择 GitHub Actions**（不要选 Deploy from branch）Vite
 3. 打开仓库的 `Actions` 标签页，确认 Workflow 已经启用（如果被禁用，需要开启 Actions 权限）
