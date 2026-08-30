@@ -16,7 +16,7 @@
 
 ---
 
-## 简介111
+## 简介
 
 GitHubM 是一个全功能的 GitHub 管理面板，提供仓库浏览、Issue 追踪、Pull Request 管理、Gist、通知、搜索等一站式操作界面，同时内置 **AI 开发助手**，支持用自然语言驱动 GitHub 仓库的读写、搜索、代码审查等全流程操作。
 
@@ -239,6 +239,21 @@ pnpm exec vite build    # 产物输出到 dist/
 | **下载** | [Releases 页面](https://github.com/qq5855144/GitHubM/releases) |
 
 ### 配置稳定签名（支持跨版本覆盖安装）
+
+---
+
+## 方式一：Fork 后直接自动部署（最简单，推荐）
+
+1. Fork 原仓库：[https://github.com/qq5855144/GitHubM](https://github.com/qq5855144/GitHubM) 到你自己账号
+2. 进入你 Fork 后的仓库 → `Settings` → `Pages`
+   - **Build and deployment → Source：选择 GitHub Actions**（不要选 Deploy from branch）Vite
+3. 打开仓库的 `Actions` 标签页，确认 Workflow 已经启用（如果被禁用，需要开启 Actions 权限）
+4. 触发构建：
+   - 可以手动运行 Workflow：进入 Actions → `deploy`工作流 → `Run workflow`
+   - 或者随便修改一个文件提交推送到`main`分支，自动触发 CI
+
+---
+
 
 **方法一：脚本自动配置（推荐）**
 
